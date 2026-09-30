@@ -4,6 +4,7 @@ COPY package*.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+COPY sdk ./sdk
 COPY migrations ./migrations
 RUN npm run build
 

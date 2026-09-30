@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-7 status
+## Phase 1-8 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, and separate admin/merchant dashboards. Subscriptions and other payment methods are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, and the official TypeScript integration package. Subscriptions and other payment methods are later phases.
 
 ## Run locally
 
@@ -72,6 +72,7 @@ Other merchant endpoints:
 - AI: `GET /v1/ai/models`, `POST /v1/ai/usage`, `GET /v1/ai/usage`
 - Admin AI: `GET/POST /v1/admin/ai/providers`, `PUT /v1/admin/ai/providers/:providerId`, `GET /v1/admin/ai/models`, `POST /v1/admin/ai/providers/:providerId/models`, `PUT /v1/admin/ai/models/:modelId`, `GET /v1/admin/ai/usage`
 - Dashboards: `/admin` and `/merchant`; collection reads are available under `/v1/admin/dashboard/*` and merchant-scoped `/v1/dashboard/*`
+- TypeScript SDK: `sdk/` (`@tariffia/pay/server` and credential-free `@tariffia/pay/browser` exports)
 
 Create a shareable link from the merchant API:
 
@@ -194,6 +195,12 @@ curl -X POST http://localhost:8080/v1/ai/usage \
 ```
 
 Admins can inspect configured costs and margins with `GET /v1/admin/ai/models` and `GET /v1/admin/ai/usage`; merchant-facing model and usage endpoints do not expose provider cost or markup.
+
+## TypeScript Integration Layer
+
+The publishable SDK package is in `sdk/`. `@tariffia/pay/server` wraps the existing `/v1` API with merchant bearer authentication, typed responses and errors, explicit idempotency keys, and webhook signature verification. It does not contain payment, credit, or pricing logic. See [`sdk/README.md`](sdk/README.md) for REST, TypeScript, checkout, webhook, credit, and AI usage examples.
+
+Import `@tariffia/pay/server` only in trusted Node.js server code. Never bundle a merchant API key into browser code. Browser checkout pages may import only `@tariffia/pay/browser`, which provides hosted-checkout navigation helpers without API authentication. Payment status and verification remain server-side Tariffia responsibilities.
 
 ## Admin and Merchant Dashboards
 

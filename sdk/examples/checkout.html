@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Continue to secure checkout</title>
+</head>
+<body>
+  <!-- Your server renders this public URL from createPaymentLink's response. No API key belongs here. -->
+  <main data-checkout-url="SERVER_RENDERED_CHECKOUT_URL">
+    <h1>Continue to checkout</h1>
+    <a href="SERVER_RENDERED_CHECKOUT_URL">Open Tariffia hosted checkout</a>
+  </main>
+  <script type="module">
+    const checkoutUrl = document.querySelector('[data-checkout-url]').dataset.checkoutUrl;
+    if (checkoutUrl !== 'SERVER_RENDERED_CHECKOUT_URL') {
+      const url = new URL(checkoutUrl);
+      if (!['http:', 'https:'].includes(url.protocol)) throw new TypeError('Invalid checkout URL');
+      window.location.assign(url.toString());
+    }
+  </script>
+</body>
+</html>
