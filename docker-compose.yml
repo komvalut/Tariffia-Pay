@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tariffia
+      POSTGRES_USER: tariffia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - tariffia-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tariffia -d tariffia"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 8080
+      DATABASE_URL: postgres://tariffia:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/tariffia
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
+      API_KEY_PEPPER: ${API_KEY_PEPPER:?Set API_KEY_PEPPER in .env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+    ports:
+      - "${PORT:-8080}:8080"
+
+volumes:
+  tariffia-postgres:

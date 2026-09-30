@@ -1,0 +1,44 @@
+import Fastify, { type FastifyInstance } from 'fastify';
+import sensible from '@fastify/sensible';
+import type { Database } from './db.js';
+import { HttpError } from './errors.js';
+import { customerRoutes } from './modules/customers.js';
+import { apiKeyRoutes } from './modules/api-keys.js';
+import { ledgerRoutes } from './modules/ledger.js';
+import { merchantRoutes } from './modules/merchants.js';
+import { orderRoutes } from './modules/orders.js';
+import { paymentRoutes } from './modules/payments.js';
+
+type AppOptions = { db: Database; migrate?: () => Promise<void> };
+
+export async function buildApp({ db, migrate }: AppOptions): Promise<FastifyInstance> {
+  if (migrate) await migrate();
+  const app = Fastify({ logger: true, bodyLimit: 256 * 1024 });
+  await app.register(sensible);
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof HttpError) {
+      void reply.code(error.statusCode).send({ error: error.code, message: error.message });
+      return;
+    }
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
+      void reply.code(409).send({ error: 'conflict', message: 'A record with these unique fields already exists' });
+      return;
+    }
+    app.log.error(error);
+    void reply.code(500).send({ error: 'internal_error', message: 'An unexpected error occurred' });
+  });
+
+  app.get('/health', async (_request, reply) => {
+    await db.query('SELECT 1');
+    return reply.send({ status: 'ok', service: 'tariffia-pay-api' });
+  });
+
+  await app.register(merchantRoutes, { db });
+  await app.register(apiKeyRoutes, { db });
+  await app.register(customerRoutes, { db });
+  await app.register(orderRoutes, { db });
+  await app.register(paymentRoutes, { db });
+  await app.register(ledgerRoutes, { db });
+  return app;
+}
