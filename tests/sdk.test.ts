@@ -24,6 +24,35 @@ function fakeFetch(responses: Response[]) {
 }
 
 describe('Tariffia TypeScript SDK', () => {
+  it('retrieves invoices and receipts and downloads their server-generated PDFs', async () => {
+    const pdf = new Response(Buffer.from('%PDF-1.4\n%%EOF\n'), { headers: { 'content-type': 'application/pdf' } });
+    const { calls, fetcher } = fakeFetch([
+      jsonResponse({ invoices: [{ id: 'invoice-1', invoiceNumber: 'INV-2026-ONE' }] }),
+      jsonResponse({ invoice: { id: 'invoice-1', invoiceNumber: 'INV-2026-ONE' } }),
+      pdf.clone(),
+      jsonResponse({ receipts: [{ id: 'receipt-1', publicId: 'opaque-public-token' }] }),
+      jsonResponse({ receipt: { id: 'receipt-1', publicId: 'opaque-public-token' } }),
+      pdf.clone(),
+      jsonResponse({ receipt: { invoiceNumber: 'INV-2026-ONE', paymentStatus: 'CONFIRMED' } }),
+      pdf.clone(),
+    ]);
+    const client = new TariffiaClient({ apiKey: 'merchant-secret', baseUrl: 'https://pay.example', fetch: fetcher });
+
+    expect((await client.getInvoices()).invoices[0]?.invoiceNumber).toBe('INV-2026-ONE');
+    expect((await client.getInvoice('invoice-1')).invoice.id).toBe('invoice-1');
+    expect(Buffer.from(await client.getInvoicePdf('invoice-1')).toString('ascii')).toContain('%PDF-1.4');
+    expect((await client.getReceipts()).receipts[0]?.publicId).toBe('opaque-public-token');
+    expect((await client.getReceipt('receipt-1')).receipt.id).toBe('receipt-1');
+    expect(Buffer.from(await client.getReceiptPdf('receipt-1')).toString('ascii')).toContain('%PDF-1.4');
+    expect((await client.getPublicReceipt('opaque-public-token')).receipt.paymentStatus).toBe('CONFIRMED');
+    expect(Buffer.from(await client.getPublicReceiptPdf('opaque-public-token')).toString('ascii')).toContain('%PDF-1.4');
+    expect(calls.map(({ url }) => new URL(url).pathname)).toEqual([
+      '/v1/invoices', '/v1/invoices/invoice-1', '/v1/invoices/invoice-1.pdf', '/v1/receipts',
+      '/v1/receipts/receipt-1', '/v1/receipts/receipt-1.pdf',
+      '/v1/public/receipts/opaque-public-token', '/v1/public/receipts/opaque-public-token.pdf',
+    ]);
+  });
+
   it('discovers enabled checkout methods and selects one when creating an order', async () => {
     const { calls, fetcher } = fakeFetch([
       jsonResponse({ methods: [{

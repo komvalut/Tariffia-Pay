@@ -5,6 +5,7 @@ import { PaymentAdapterError } from '../payment-adapters/errors.js';
 import type { PaymentAdapterRegistry } from '../payment-adapters/registry.js';
 import { newId } from '../security.js';
 import { enqueueWebhookEvent } from '../webhooks/outbox.js';
+import { createBillingDocuments } from './billing-documents.js';
 import type { PoolClient } from 'pg';
 import type { PaymentLifecycleHandler } from './payment-lifecycle.js';
 
@@ -345,13 +346,15 @@ export class PaymentVerificationService {
       );
       if (!order.rows[0]) throw new HttpError(409, 'Order is not payable in its current state', 'invalid_order_state');
 
-      await client.query(
+      const paymentUpdate = await client.query<{ confirmed_at: Date }>(
         `UPDATE payments
             SET status = 'CONFIRMED', tx_hash = $2, token_address = $3,
                 confirmed_at = now(), updated_at = now()
-          WHERE id = $1`,
+          WHERE id = $1 RETURNING confirmed_at`,
         [payment.id, transactionHash, payment.token_address],
       );
+      const confirmedAt = paymentUpdate.rows[0]?.confirmed_at;
+      if (!confirmedAt) throw new Error('Confirmed payment timestamp was not returned');
       await client.query(
         `INSERT INTO ledger_entries (id, merchant_id, order_id, payment_id, entry_type, amount, currency, reference, metadata)
          VALUES ($1, $2, $3, $4, 'PAYMENT_CONFIRMED', $5, $6, $7, $8::jsonb)`,
@@ -361,6 +364,17 @@ export class PaymentVerificationService {
           JSON.stringify({ network: payment.network, tokenAddress: payment.token_address, confirmations: verification.receipt.confirmations, blockNumber: verification.receipt.blockNumber }),
         ],
       );
+      const documents = await createBillingDocuments(client, {
+        paymentId: payment.id,
+        merchantId: payment.merchant_id,
+        orderId: payment.order_id,
+        amount: payment.amount,
+        currency: payment.currency,
+        adapter: payment.adapter,
+        network: payment.network,
+        transactionId: transactionHash,
+        paidAt: confirmedAt,
+      });
       await enqueueWebhookEvent({
         client,
         merchantId: payment.merchant_id,
@@ -371,6 +385,7 @@ export class PaymentVerificationService {
           adapter: payment.adapter, currency: payment.currency, network: payment.network,
           transactionId: transactionHash, transactionHash,
           confirmations: verification.receipt.confirmations, status: 'CONFIRMED',
+          invoiceNumber: documents.invoiceNumber, receiptUrl: documents.receiptUrl,
         },
       });
       await enqueueWebhookEvent({
@@ -382,6 +397,30 @@ export class PaymentVerificationService {
           orderId: payment.order_id, paymentId: payment.id, amount: payment.amount,
           adapter: payment.adapter, currency: payment.currency,
           transactionId: transactionHash, transactionHash, status: 'PAID',
+          invoiceNumber: documents.invoiceNumber, receiptUrl: documents.receiptUrl,
+        },
+      });
+      await enqueueWebhookEvent({
+        client,
+        merchantId: payment.merchant_id,
+        eventType: 'invoice.issued',
+        resourceId: documents.invoiceId,
+        data: {
+          invoiceId: documents.invoiceId, invoiceNumber: documents.invoiceNumber,
+          orderId: payment.order_id, paymentId: payment.id, amount: payment.amount,
+          currency: payment.currency, paymentMethod: payment.adapter, transactionId: transactionHash,
+          paidAt: confirmedAt.toISOString(), receiptUrl: documents.receiptUrl,
+        },
+      });
+      await enqueueWebhookEvent({
+        client,
+        merchantId: payment.merchant_id,
+        eventType: 'receipt.issued',
+        resourceId: documents.receiptId,
+        data: {
+          receiptId: documents.receiptId, invoiceId: documents.invoiceId,
+          invoiceNumber: documents.invoiceNumber, orderId: payment.order_id, paymentId: payment.id,
+          paymentMethod: payment.adapter, receiptUrl: documents.receiptUrl,
         },
       });
       for (const handler of this.lifecycleHandlers) {

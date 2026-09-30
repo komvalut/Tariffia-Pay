@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#07110f">
+  <title>Tariffia Pay receipt</title>
+  <style>
+    :root { color-scheme: dark; --bg:#07110f; --panel:#101d19; --line:#2b3b34; --text:#f3f7f2; --muted:#a5b2a9; --accent:#c5f36a; --ink:#15200e; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(ellipse at 85% 0%,rgba(108,158,87,.16),transparent 38rem),var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+    .shell { width:min(100% - 28px,680px); margin:0 auto; padding:22px 0 50px; }
+    .brand { display:flex; align-items:center; gap:10px; margin-bottom:36px; font-size:18px; font-weight:760; letter-spacing:-.04em; }
+    .mark { display:grid; place-items:center; width:35px; height:35px; border-radius:12px; color:var(--ink); background:var(--accent); }
+    .card { padding:clamp(22px,5vw,40px); border:1px solid var(--line); border-radius:22px; background:linear-gradient(160deg,rgba(25,39,32,.98),rgba(13,24,20,.98)); box-shadow:0 24px 70px rgba(0,0,0,.22); }
+    .eyebrow { color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.14em; }
+    h1 { margin:10px 0 5px; font-size:clamp(28px,7vw,42px); letter-spacing:-.055em; }
+    .merchant,.description { color:var(--muted); line-height:1.5; overflow-wrap:anywhere; }
+    .merchant { margin:0; }
+    .amount { display:flex; align-items:baseline; gap:9px; margin:28px 0; font-size:clamp(38px,10vw,60px); font-weight:740; letter-spacing:-.07em; overflow-wrap:anywhere; }
+    .amount small { color:var(--accent); font-size:15px; letter-spacing:0; }
+    .row { display:grid; grid-template-columns:125px minmax(0,1fr); gap:14px; padding:13px 0; border-top:1px solid rgba(43,59,52,.8); font-size:12px; }
+    .label { color:var(--muted); }
+    .value { text-align:right; overflow-wrap:anywhere; line-height:1.5; }
+    .status { display:inline-flex; align-items:center; gap:7px; margin:0 0 20px; padding:7px 10px; border:1px solid rgba(197,243,106,.22); border-radius:99px; color:#ddedca; background:rgba(197,243,106,.08); font-size:11px; }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); }
+    .download { display:inline-flex; justify-content:center; align-items:center; min-height:48px; margin-top:22px; padding:12px 18px; border-radius:13px; background:var(--accent); color:var(--ink); font-weight:740; text-decoration:none; }
+    .loading { min-height:50vh; display:grid; place-items:center; color:var(--muted); }
+    .error { color:#ffb1a8; }
+    footer { padding:20px 10px 0; text-align:center; color:#829087; font-size:10px; line-height:1.6; }
+    @media(max-width:480px) { .shell{width:min(100% - 20px,680px);padding-top:15px}.row{grid-template-columns:98px minmax(0,1fr)} }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="brand"><span class="mark">T</span><span>tariffia<span style="color:var(--accent)"> pay</span></span></header>
+    <div id="loading" class="loading">Loading secure receipt</div>
+    <article id="receipt" class="card" hidden>
+      <div class="eyebrow">Payment receipt</div>
+      <h1 id="merchant"></h1>
+      <p id="description" class="description"></p>
+      <div class="amount"><span id="amount"></span><small id="currency"></small></div>
+      <div class="status"><span class="dot"></span><span id="status">CONFIRMED</span></div>
+      <div class="row"><span class="label">Invoice number</span><span id="invoice" class="value"></span></div>
+      <div class="row"><span class="label">Payment method</span><span id="method" class="value"></span></div>
+      <div class="row"><span class="label">Network</span><span id="network" class="value"></span></div>
+      <div class="row"><span class="label">Transaction ID</span><span id="transaction" class="value"></span></div>
+      <div class="row"><span class="label">Paid at</span><span id="paid-at" class="value"></span></div>
+      <a id="download" class="download" href="#">Download PDF receipt</a>
+    </article>
+    <footer>Issued by Tariffia Pay. Payment status is recorded by the server after adapter verification.</footer>
+  </main>
+  <script>
+    (() => {
+      const publicId = window.location.pathname.split('/').filter(Boolean)[1];
+      const loading = document.getElementById('loading');
+      const receipt = document.getElementById('receipt');
+      const put = (id, value) => { document.getElementById(id).textContent = value ?? ''; };
+      void fetch(`/v1/public/receipts/${encodeURIComponent(publicId || '')}`, { cache: 'no-store' })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(response.status === 404 ? 'Receipt not found.' : 'Could not load receipt.');
+          const body = await response.json();
+          const data = body.receipt;
+          put('merchant', data.merchantName);
+          put('description', data.description);
+          put('amount', data.amount);
+          put('currency', data.currency);
+          put('status', data.paymentStatus);
+          put('invoice', data.invoiceNumber);
+          put('method', data.paymentMethod);
+          put('network', data.network);
+          put('transaction', data.transactionId);
+          put('paid-at', new Date(data.paidAt).toLocaleString());
+          document.getElementById('download').href = `/v1/public/receipts/${encodeURIComponent(publicId)}/pdf`;
+          loading.hidden = true;
+          receipt.hidden = false;
+        })
+        .catch((error) => {
+          loading.textContent = error.message || 'Could not load receipt.';
+          loading.classList.add('error');
+        });
+    })();
+  </script>
+</body>
+</html>

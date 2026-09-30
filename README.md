@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-12 status
+## Phase 1-15 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, the formal payment-adapter contract and registry with Base USDC verification and a disabled-by-default LND REST Lightning provider, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, the official TypeScript integration package, production security hardening, and self-hosted production deployment support. Configure a node only through server-side environment secrets; no live node connectivity was tested here. Additional payment methods are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, the formal payment-adapter contract and registry with Base USDC verification and a disabled-by-default LND REST Lightning provider, unified multi-method checkout, invoices and receipts, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, the official TypeScript integration package, production security hardening, and self-hosted production deployment support. Configure Lightning only through server-side environment secrets. Additional payment methods are later phases.
 
 ## Run locally
 
@@ -91,6 +91,10 @@ Production startup requires explicit database, admin, API-key pepper, public URL
 
 For Compose-based deployment, migrations, readiness, upgrades, and PostgreSQL backup/restore procedures, see [`PRODUCTION.md`](PRODUCTION.md).
 
+## Invoices and Receipts
+
+Confirmed payments receive a unique invoice number and one receipt in the same database transaction as payment confirmation. Merchants can list and download invoices/receipts with `GET /v1/invoices`, `GET /v1/receipts`, and their `.pdf` endpoints. Public receipts use a separate random URL identifier at `/r/:publicId`; the deterministic PDF is generated server-side. The SDK exposes invoice/receipt retrieval and PDF download methods.
+
 ## USDC on Base
 
 Set `BASE_RPC_URL` to a trusted Base mainnet JSON-RPC endpoint (a self-operated node is supported). `USDC_TOKEN_ADDRESS` defaults to Circle's Base USDC contract, and `USDC_MIN_CONFIRMATIONS` defaults to 12. Merchant `walletAddress` is the direct payment recipient; Tariffia never holds or signs with merchant keys.
@@ -119,7 +123,7 @@ Checkout routes are `GET /p/:paymentId`, `GET /p/:paymentId/qr.png`, `GET /v1/pu
 
 ## Webhooks
 
-Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired`, `order.paid`, `credit.topup`, `credit.deducted` and `ai.usage.recorded`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger/credit/AI-usage transition, then delivered asynchronously.
+Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired`, `order.paid`, `credit.topup`, `credit.deducted`, `ai.usage.recorded`, `invoice.issued` and `receipt.issued`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger/credit/AI-usage/document transition, then delivered asynchronously.
 
 Payments expire after `PAYMENT_EXPIRATION_MINUTES` only when no transaction hash has been submitted. A submitted or on-chain-detected transfer is not expired while verification is pending. `payment.failed` is emitted only when the configured USDC contract receipt proves that the matching transfer call reverted; an arbitrary invalid hash does not fail the payment.
 

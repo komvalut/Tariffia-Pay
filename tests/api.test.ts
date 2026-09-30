@@ -85,6 +85,7 @@ describe('Tariffia merchant and payment API', () => {
     await pool.query(webhookMigration);
     await pool.query(await readFile(path.join(migrationsDir, '0004_credit_engine.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0005_ai_pricing.sql'), 'utf8'));
+    await pool.query(await readFile(path.join(migrationsDir, '0006_invoices_receipts.sql'), 'utf8'));
 
     db = {
       query: (text, values = []) => pool.query(text, values),
@@ -368,12 +369,27 @@ describe('Tariffia merchant and payment API', () => {
     ]));
     expect(ledger.json().entries).toHaveLength(3);
     const webhookEvents = await db.query<{ event_type: string; payload: { data: { adapter?: string; transactionId?: string } } }>(
-      'SELECT event_type, payload FROM webhook_events WHERE resource_id = $1 ORDER BY created_at ASC', [payment.id],
+      'SELECT event_type, payload FROM webhook_events WHERE merchant_id = $1 ORDER BY created_at ASC', [merchant.json().merchant.id],
     );
     expect(webhookEvents.rows.map((event) => event.event_type)).toContain('payment.confirmed');
     expect(webhookEvents.rows.filter((event) => event.event_type === 'payment.confirmed')).toHaveLength(1);
     expect(webhookEvents.rows.find((event) => event.event_type === 'payment.confirmed')?.payload.data)
       .toMatchObject({ adapter: 'lightning', transactionId: invoice.paymentHash });
+    expect(webhookEvents.rows.map((event) => event.event_type)).toEqual(expect.arrayContaining(['invoice.issued', 'receipt.issued']));
+    const lightningInvoices = await app.inject({ method: 'GET', url: '/v1/invoices', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(lightningInvoices.json().invoices).toHaveLength(1);
+    expect(lightningInvoices.json().invoices[0]).toMatchObject({
+      paymentMethod: { id: 'lightning', name: 'Bitcoin Lightning' }, amount: '25', currency: 'SAT',
+      paymentStatus: 'CONFIRMED', transactionId: invoice.paymentHash,
+    });
+    const lightningReceipts = await app.inject({ method: 'GET', url: '/v1/receipts', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(lightningReceipts.json().receipts).toHaveLength(1);
+    const lightningReceipt = lightningReceipts.json().receipts[0];
+    expect(lightningReceipt.publicId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const publicLightningReceipt = await app.inject({ method: 'GET', url: `/v1/public/receipts/${lightningReceipt.publicId}` });
+    expect(publicLightningReceipt.json().receipt).toMatchObject({
+      paymentMethod: 'Bitcoin Lightning', amount: '25', currency: 'SAT', paymentStatus: 'CONFIRMED',
+    });
 
     await app.close();
     const disabledRegistry = new PaymentAdapterRegistry();
@@ -481,15 +497,23 @@ describe('Tariffia merchant and payment API', () => {
       payload: { name: 'Paid Store', email: 'paid@example.com', walletAddress: '0x4444444444444444444444444444444444444444' },
     });
     const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Receipt Customer', email: 'receipt-customer@example.com' },
+    });
     const created = await app.inject({
       method: 'POST',
       url: '/v1/orders',
       headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'paid-store-order-001' },
-      payload: { description: 'Invoice 1', amount: '12.34' },
+      payload: { customerId: customer.json().customer.id, description: 'Invoice 1', amount: '12.34' },
     });
     const { order, payment } = created.json();
     const transactionHash = `0x${'a'.repeat(64)}`;
     verificationResult = { state: 'verified', confirmations: 12, blockNumber: 123456n };
+
+    const pendingInvoices = await app.inject({ method: 'GET', url: '/v1/invoices', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(pendingInvoices.statusCode).toBe(200);
+    expect(pendingInvoices.json().invoices).toHaveLength(0);
 
     const first = await app.inject({
       method: 'POST',
@@ -522,6 +546,106 @@ describe('Tariffia merchant and payment API', () => {
     expect(ledger.json().entries.map((entry: { entryType: string }) => entry.entryType)).toContain('PAYMENT_DETECTED');
     const confirmation = ledger.json().entries.find((entry: { entryType: string }) => entry.entryType === 'PAYMENT_CONFIRMED');
     expect(confirmation.reference).toBe(transactionHash);
+
+    const invoices = await app.inject({ method: 'GET', url: '/v1/invoices', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(invoices.json().invoices).toHaveLength(1);
+    const invoice = invoices.json().invoices[0];
+    expect(invoice).toMatchObject({
+      invoiceNumber: expect.stringMatching(/^INV-\d{4}-[A-F0-9]{32}$/),
+      paymentId: payment.id, orderId: order.id, paymentStatus: 'CONFIRMED',
+      amount: '12.34', currency: 'USDC', paymentMethod: { id: 'usdc', name: 'Base USDC' },
+      transactionId: transactionHash, merchant: { name: 'Paid Store' },
+      customer: { id: customer.json().customer.id, name: 'Receipt Customer', email: 'receipt-customer@example.com' },
+    });
+    expect(invoice.receipt.publicId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(invoice.receipt.publicId).not.toBe(invoice.id);
+
+    const receipts = await app.inject({ method: 'GET', url: '/v1/receipts', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(receipts.json().receipts).toHaveLength(1);
+    const receipt = receipts.json().receipts[0];
+    expect(receipt).toMatchObject({
+      invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, paymentId: payment.id,
+      paymentStatus: 'CONFIRMED', transactionId: transactionHash,
+    });
+
+    const publicReceipt = await app.inject({ method: 'GET', url: `/v1/public/receipts/${receipt.publicId}` });
+    expect(publicReceipt.statusCode).toBe(200);
+    expect(publicReceipt.json().receipt).toMatchObject({
+      invoiceNumber: invoice.invoiceNumber, merchantName: 'Paid Store',
+      amount: '12.34', currency: 'USDC', paymentMethod: 'Base USDC', paymentStatus: 'CONFIRMED',
+    });
+    expect(publicReceipt.body).not.toContain('receipt-customer@example.com');
+    expect(publicReceipt.body).not.toContain('paid@example.com');
+    const documentEvents = await db.query<{ event_type: string; payload: { data: { invoiceNumber?: string; receiptUrl?: string } } }>(
+      `SELECT event_type, payload FROM webhook_events
+        WHERE event_type IN ('invoice.issued', 'receipt.issued')`,
+    );
+    expect(documentEvents.rows.map((event) => event.event_type)).toEqual(expect.arrayContaining(['invoice.issued', 'receipt.issued']));
+    expect(documentEvents.rows.find((event) => event.event_type === 'invoice.issued')?.payload.data)
+      .toMatchObject({ invoiceNumber: invoice.invoiceNumber, receiptUrl: invoice.receipt.publicUrl });
+    const publicReceiptPage = await app.inject({ method: 'GET', url: `/r/${receipt.publicId}` });
+    expect(publicReceiptPage.statusCode).toBe(200);
+    expect(publicReceiptPage.body).toContain('Download PDF receipt');
+
+    const firstPdf = await app.inject({ method: 'GET', url: `/v1/public/receipts/${receipt.publicId}.pdf` });
+    const repeatedPdf = await app.inject({ method: 'GET', url: `/v1/public/receipts/${receipt.publicId}.pdf` });
+    expect(firstPdf.statusCode).toBe(200);
+    expect(firstPdf.headers['content-type']).toContain('application/pdf');
+    expect(firstPdf.rawPayload.subarray(0, 8).toString('ascii')).toBe('%PDF-1.4');
+    expect(firstPdf.rawPayload).toEqual(repeatedPdf.rawPayload);
+    const invoicePdf = await app.inject({
+      method: 'GET', url: `/v1/invoices/${invoice.id}.pdf`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(invoicePdf.statusCode).toBe(200);
+    expect(invoicePdf.rawPayload.subarray(0, 8).toString('ascii')).toBe('%PDF-1.4');
+    expect((await app.inject({
+      method: 'GET', url: `/v1/invoices/${invoice.id}`, headers: { authorization: `Bearer ${apiKey}` },
+    })).json().invoice.invoiceNumber).toBe(invoice.invoiceNumber);
+    expect((await app.inject({
+      method: 'GET', url: `/v1/receipts/${receipt.id}`, headers: { authorization: `Bearer ${apiKey}` },
+    })).json().receipt.invoiceNumber).toBe(invoice.invoiceNumber);
+    const merchantReceiptPdf = await app.inject({
+      method: 'GET', url: `/v1/receipts/${receipt.id}.pdf`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(merchantReceiptPdf.statusCode).toBe(200);
+    expect(merchantReceiptPdf.rawPayload.subarray(0, 8).toString('ascii')).toBe('%PDF-1.4');
+
+    const unauthorized = await app.inject({ method: 'GET', url: '/v1/invoices' });
+    expect(unauthorized.statusCode).toBe(401);
+    const otherMerchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants', headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Other Receipt Store', email: 'other-receipt@example.com', walletAddress: '0x4545454545454545454545454545454545454545' },
+    });
+    const otherInvoice = await app.inject({
+      method: 'GET', url: `/v1/invoices/${invoice.id}`, headers: { authorization: `Bearer ${otherMerchant.json().apiKey}` },
+    });
+    expect(otherInvoice.statusCode).toBe(404);
+    const otherReceipt = await app.inject({
+      method: 'GET', url: `/v1/receipts/${receipt.id}`, headers: { authorization: `Bearer ${otherMerchant.json().apiKey}` },
+    });
+    expect(otherReceipt.statusCode).toBe(404);
+    const adminInvoices = await app.inject({ method: 'GET', url: '/v1/admin/invoices', headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' } });
+    const adminReceipts = await app.inject({ method: 'GET', url: '/v1/admin/receipts', headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' } });
+    expect(adminInvoices.json().invoices).toHaveLength(1);
+    expect(adminReceipts.json().receipts).toHaveLength(1);
+
+    const secondOrder = await app.inject({
+      method: 'POST', url: '/v1/orders',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'paid-store-order-002' },
+      payload: { description: 'Invoice 2', amount: '2.00' },
+    });
+    const secondPayment = secondOrder.json().payment;
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 123457n };
+    const secondConfirmation = await app.inject({
+      method: 'POST', url: `/v1/payments/${secondPayment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionHash: `0x${'b'.repeat(64)}` },
+    });
+    expect(secondConfirmation.statusCode).toBe(200);
+    const allInvoices = await app.inject({ method: 'GET', url: '/v1/invoices', headers: { authorization: `Bearer ${apiKey}` } });
+    const allReceipts = await app.inject({ method: 'GET', url: '/v1/receipts', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(allInvoices.json().invoices).toHaveLength(2);
+    expect(new Set(allInvoices.json().invoices.map((item: { invoiceNumber: string }) => item.invoiceNumber)).size).toBe(2);
+    expect(allReceipts.json().receipts).toHaveLength(2);
   });
 
   it('does not confirm mismatched on-chain transfers', async () => {

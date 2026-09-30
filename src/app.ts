@@ -25,6 +25,7 @@ import { adminAiRoutes } from './modules/admin-ai.js';
 import { aiRoutes } from './modules/ai.js';
 import { dashboardRoutes } from './modules/dashboard.js';
 import { adminPaymentAdapterRoutes } from './modules/admin-payment-adapters.js';
+import { billingDocumentRoutes } from './modules/billing-documents.js';
 import { safeErrorMetadata } from './safe-logging.js';
 import { createDefaultPaymentAdapterRegistry } from './payment-adapters/default-registry.js';
 import { PaymentAdapterRegistry } from './payment-adapters/registry.js';
@@ -128,6 +129,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, v
   await app.register(paymentLinkRoutes, { db, paymentCore });
   await app.register(paymentRoutes, { db, verification: paymentVerification });
   await app.register(checkoutRoutes, { db, verification: paymentVerification, adapters });
+  await app.register(billingDocumentRoutes, { db, adapters });
   await app.register(webhookRoutes, { db });
   await app.register(adminWebhookRoutes, { db });
   await app.register(creditRoutes, { db, credits, paymentCore });

@@ -12,7 +12,9 @@ export type WebhookEventType =
   | 'order.paid'
   | 'credit.topup'
   | 'credit.deducted'
-  | 'ai.usage.recorded';
+  | 'ai.usage.recorded'
+  | 'invoice.issued'
+  | 'receipt.issued';
 
 export interface TariffiaClientOptions {
   /** Merchant API key. Keep this server-side and load it from a secret store or environment. */
@@ -93,6 +95,64 @@ export interface PaymentMethodOption {
     currencies: string[];
     networks: string[];
   };
+}
+
+export interface Invoice {
+  id: string;
+  invoiceNumber: string;
+  merchantId: string;
+  customerId: string | null;
+  orderId: string;
+  paymentId: string;
+  amount: string;
+  currency: string;
+  paymentMethod: { id: string; name: string };
+  network: string;
+  paymentStatus: 'CONFIRMED';
+  transactionId: string;
+  paidAt: string;
+  merchant: { name: string; email: string };
+  customer: { id: string; name: string | null; email: string | null } | null;
+  orderReference: string | null;
+  description: string;
+  receipt: { id: string; publicId: string; issuedAt: string; publicUrl: string };
+  createdAt: string;
+}
+
+export interface Receipt {
+  id: string;
+  publicId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  paymentId: string;
+  orderId: string;
+  amount: string;
+  currency: string;
+  paymentMethod: { id: string; name: string };
+  network: string;
+  paymentStatus: 'CONFIRMED';
+  transactionId: string;
+  paidAt: string;
+  issuedAt: string;
+  merchant: { name: string; email: string };
+  customer: { id: string; name: string | null; email: string | null } | null;
+  orderReference: string | null;
+  description: string;
+  publicUrl: string;
+}
+
+export interface PublicReceipt {
+  invoiceNumber: string;
+  merchantName: string;
+  description: string;
+  amount: string;
+  currency: string;
+  paymentMethod: string;
+  network: string;
+  paymentStatus: 'CONFIRMED';
+  transactionId: string;
+  paidAt: string;
+  issuedAt: string;
 }
 
 export interface PaymentLinkResult {
@@ -255,6 +315,38 @@ export class TariffiaClient {
     return this.request('/v1/public/payment-methods', 'GET', undefined, options);
   }
 
+  getInvoices(limit = 50, options: RequestOptions = {}): Promise<{ invoices: Invoice[] }> {
+    return this.request(`/v1/invoices?limit=${encodeURIComponent(String(limit))}`, 'GET', undefined, options);
+  }
+
+  getInvoice(invoiceIdOrNumber: string, options: RequestOptions = {}): Promise<{ invoice: Invoice }> {
+    return this.request(`/v1/invoices/${encodeURIComponent(invoiceIdOrNumber)}`, 'GET', undefined, options);
+  }
+
+  getInvoicePdf(invoiceIdOrNumber: string, options: RequestOptions = {}): Promise<Uint8Array> {
+    return this.requestPdf(`/v1/invoices/${encodeURIComponent(invoiceIdOrNumber)}.pdf`, options);
+  }
+
+  getReceipts(limit = 50, options: RequestOptions = {}): Promise<{ receipts: Receipt[] }> {
+    return this.request(`/v1/receipts?limit=${encodeURIComponent(String(limit))}`, 'GET', undefined, options);
+  }
+
+  getReceipt(receiptIdOrInvoiceNumber: string, options: RequestOptions = {}): Promise<{ receipt: Receipt }> {
+    return this.request(`/v1/receipts/${encodeURIComponent(receiptIdOrInvoiceNumber)}`, 'GET', undefined, options);
+  }
+
+  getReceiptPdf(receiptIdOrInvoiceNumber: string, options: RequestOptions = {}): Promise<Uint8Array> {
+    return this.requestPdf(`/v1/receipts/${encodeURIComponent(receiptIdOrInvoiceNumber)}.pdf`, options);
+  }
+
+  getPublicReceipt(publicId: string, options: RequestOptions = {}): Promise<{ receipt: PublicReceipt }> {
+    return this.request(`/v1/public/receipts/${encodeURIComponent(publicId)}`, 'GET', undefined, options);
+  }
+
+  getPublicReceiptPdf(publicId: string, options: RequestOptions = {}): Promise<Uint8Array> {
+    return this.requestPdf(`/v1/public/receipts/${encodeURIComponent(publicId)}.pdf`, options);
+  }
+
   getPaymentStatus(paymentId: string, options: RequestOptions = {}): Promise<PaymentStatusResult> {
     return this.request(`/v1/payments/${encodeURIComponent(paymentId)}`, 'GET', undefined, options);
   }
@@ -335,6 +427,32 @@ export class TariffiaClient {
       );
     }
     return parsed as T;
+  }
+
+  private async requestPdf(path: string, options: RequestOptions): Promise<Uint8Array> {
+    const response = await this.fetcher(`${this.baseUrl}${path}`, {
+      method: 'GET',
+      headers: { accept: 'application/pdf', authorization: `Bearer ${this.#apiKey}` },
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      let body: unknown;
+      try { body = text ? JSON.parse(text) as unknown : undefined; } catch { body = undefined; }
+      const errorBody = isRecord(body) ? body : {};
+      throw new TariffiaApiError(
+        typeof errorBody.message === 'string' ? errorBody.message : `Tariffia API request failed with status ${response.status}`,
+        response.status,
+        typeof errorBody.error === 'string' ? errorBody.error : 'request_error',
+        body,
+      );
+    }
+    const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
+    if (contentType !== 'application/pdf') {
+      const text = await response.text();
+      throw new TariffiaProtocolError('Tariffia API did not return a PDF response', response.status, text);
+    }
+    return new Uint8Array(await response.arrayBuffer());
   }
 }
 

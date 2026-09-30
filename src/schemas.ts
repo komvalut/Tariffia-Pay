@@ -54,6 +54,8 @@ export const webhookEventTypes = [
   'credit.topup',
   'credit.deducted',
   'ai.usage.recorded',
+  'invoice.issued',
+  'receipt.issued',
 ] as const;
 export type WebhookEventType = typeof webhookEventTypes[number];
 
