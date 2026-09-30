@@ -54,8 +54,8 @@ export const aiRoutes: FastifyPluginAsync<{ db: Database; aiPricing: AiPricingEn
       `SELECT u.id, u.customer_id AS "customerId", p.slug AS provider, m.slug AS model,
               u.request_id AS "requestId", u.pricing_mode AS "pricingMode", u.input_tokens AS "inputTokens",
               u.output_tokens AS "outputTokens", u.total_tokens AS "totalTokens",
-              u.provider_cost_usd::text AS "providerCostUsd", u.customer_price_usd::text AS "customerPriceUsd",
-              u.profit_usd::text AS "profitUsd", u.credits_deducted_units::text AS "creditsDeductedUnits",
+              u.customer_price_usd::text AS "customerPriceUsd",
+              u.credits_deducted_units::text AS "creditsDeductedUnits",
               u.created_at AS "createdAt"
          FROM ai_usage_records u JOIN ai_providers p ON p.id = u.provider_id
          JOIN ai_models m ON m.id = u.model_id

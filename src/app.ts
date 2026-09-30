@@ -23,6 +23,7 @@ import { CreditEngine } from './services/credit-engine.js';
 import { AiPricingEngine } from './services/ai-pricing-engine.js';
 import { adminAiRoutes } from './modules/admin-ai.js';
 import { aiRoutes } from './modules/ai.js';
+import { dashboardRoutes } from './modules/dashboard.js';
 
 type AppOptions = {
   db: Database;
@@ -77,5 +78,6 @@ export async function buildApp({ db, migrate, paymentAdapter, verification, cred
   await app.register(adminAiRoutes, { db });
   await app.register(aiRoutes, { db, aiPricing });
   await app.register(ledgerRoutes, { db });
+  await app.register(dashboardRoutes, { db });
   return app;
 }

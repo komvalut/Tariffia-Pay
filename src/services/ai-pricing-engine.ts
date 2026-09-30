@@ -220,8 +220,7 @@ export class AiPricingEngine {
       usageId, requestId: input.requestId, customerId: input.customerId,
       provider: input.provider, model: input.model, pricingMode: model.pricing_mode,
       inputTokens: input.inputTokens, outputTokens: input.outputTokens,
-      providerCostUsd: price.providerCostUsd, customerPriceUsd: price.customerPriceUsd,
-      profitUsd: price.profitUsd, creditsDeducted: formatUnits(creditUnits, 6),
+      customerPriceUsd: price.customerPriceUsd, creditsDeducted: formatUnits(creditUnits, 6),
       balanceAfter: formatUnits(balanceAfter, 6), metadata: input.metadata,
     };
     await enqueueWebhookEvent({
@@ -239,8 +238,7 @@ export class AiPricingEngine {
           id: usageId, requestId: input.requestId, customerId: input.customerId,
           provider: input.provider, model: input.model, pricingMode: model.pricing_mode,
           inputTokens: input.inputTokens, outputTokens: input.outputTokens,
-          providerCostUsd: price.providerCostUsd, customerPriceUsd: price.customerPriceUsd,
-          profitUsd: price.profitUsd, creditsDeducted: formatUnits(creditUnits, 6),
+          customerPriceUsd: price.customerPriceUsd, creditsDeducted: formatUnits(creditUnits, 6),
           balanceAfter: formatUnits(balanceAfter, 6), currency: 'CREDITS', metadata: input.metadata,
         },
       },

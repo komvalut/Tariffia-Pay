@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-6 status
+## Phase 1-7 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, and configurable AI reseller pricing with usage metering. Subscriptions and other payment methods are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, and separate admin/merchant dashboards. Subscriptions and other payment methods are later phases.
 
 ## Run locally
 
@@ -71,6 +71,7 @@ Other merchant endpoints:
 - Admin: `GET/PUT /v1/admin/credits/settings`, `GET /v1/admin/credits/accounts`, `GET /v1/admin/credits/transactions`
 - AI: `GET /v1/ai/models`, `POST /v1/ai/usage`, `GET /v1/ai/usage`
 - Admin AI: `GET/POST /v1/admin/ai/providers`, `PUT /v1/admin/ai/providers/:providerId`, `GET /v1/admin/ai/models`, `POST /v1/admin/ai/providers/:providerId/models`, `PUT /v1/admin/ai/models/:modelId`, `GET /v1/admin/ai/usage`
+- Dashboards: `/admin` and `/merchant`; collection reads are available under `/v1/admin/dashboard/*` and merchant-scoped `/v1/dashboard/*`
 
 Create a shareable link from the merchant API:
 
@@ -194,9 +195,17 @@ curl -X POST http://localhost:8080/v1/ai/usage \
 
 Admins can inspect configured costs and margins with `GET /v1/admin/ai/models` and `GET /v1/admin/ai/usage`; merchant-facing model and usage endpoints do not expose provider cost or markup.
 
+## Admin and Merchant Dashboards
+
+Open `/admin` for the platform console or `/merchant` for the merchant workspace. The admin console requires `ADMIN_API_KEY`; the merchant workspace requires that merchant's API key. Credentials are held in browser-tab memory only and are cleared when signing out, reloading or closing the tab. The light/dark theme preference is the only dashboard value stored locally.
+
+Dashboard collection and summary endpoints are read-only views over the existing payment, credit, AI usage and webhook tables. Admin data routes require the admin header; merchant routes authenticate with the merchant API key and scope every result to that merchant. Search, status filters and bounded pagination are supported for collection views. Payment-link creation, credit top-ups, customer creation, AI pricing and webhook management continue to use their existing APIs and services rather than dashboard-specific business logic.
+
+Merchant dashboards show the configured customer price and credits charged for AI usage, but not provider costs or platform margins. Admin webhook endpoint views omit URL paths and query strings; webhook secrets, encrypted webhook secrets, API keys and private keys are never displayed by the dashboard. The admin health screen uses the basic `/health` response and operational counts only.
+
 ## Architecture
 
-`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; `src/services/credit-engine.ts` owns internal balances and atomic deductions; `src/services/webhook-delivery-worker.ts` handles expiry and asynchronous signed delivery. `src/webhooks/` contains secret encryption, signatures and transactional outbox helpers. `src/modules/` keeps merchant, customer, order, payment, payment-link, checkout, webhook, credit, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
+`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; `src/services/credit-engine.ts` owns internal balances and atomic deductions; `src/services/ai-pricing-engine.ts` prices and records metered usage; `src/services/webhook-delivery-worker.ts` handles expiry and asynchronous signed delivery. `src/webhooks/` contains secret encryption, signatures and transactional outbox helpers. `src/modules/` separates merchant, admin, dashboard, payment, credit, AI, webhook, API-key and ledger routes. Dashboard HTML, CSS and JavaScript are in `web/`; PostgreSQL schema is versioned under `migrations/`.
 
 ## Development checks
 

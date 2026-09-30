@@ -1010,9 +1010,10 @@ describe('Tariffia merchant and payment API', () => {
     });
     expect(usage.statusCode).toBe(201);
     expect(usage.json().usage).toMatchObject({
-      providerCostUsd: '0.02000000', customerPriceUsd: '0.02200000',
-      profitUsd: '0.00200000', creditsDeducted: '2.2', balanceAfter: '97.8',
+      customerPriceUsd: '0.02200000', creditsDeducted: '2.2', balanceAfter: '97.8',
     });
+    expect(usage.json().usage).not.toHaveProperty('providerCostUsd');
+    expect(usage.json().usage).not.toHaveProperty('profitUsd');
     const replay = await app.inject({
       method: 'POST', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` }, payload,
     });
@@ -1037,6 +1038,8 @@ describe('Tariffia merchant and payment API', () => {
 
     const history = await app.inject({ method: 'GET', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` } });
     expect(history.json().usage).toHaveLength(1);
+    expect(history.json().usage[0]).not.toHaveProperty('providerCostUsd');
+    expect(history.json().usage[0]).not.toHaveProperty('profitUsd');
     const adminUsage = await app.inject({ method: 'GET', url: '/v1/admin/ai/usage', headers: adminHeaders });
     expect(adminUsage.statusCode).toBe(200);
     expect(adminUsage.json().usage).toHaveLength(1);
@@ -1044,6 +1047,11 @@ describe('Tariffia merchant and payment API', () => {
       'SELECT event_type FROM webhook_events WHERE merchant_id = $1', [merchantId],
     );
     expect(events.rows.map((event) => event.event_type)).toContain('ai.usage.recorded');
+    const aiEvent = await db.query<{ payload: { data: Record<string, unknown> } }>(
+      `SELECT payload FROM webhook_events WHERE merchant_id = $1 AND event_type = 'ai.usage.recorded'`, [merchantId],
+    );
+    expect(aiEvent.rows[0].payload.data).not.toHaveProperty('providerCostUsd');
+    expect(aiEvent.rows[0].payload.data).not.toHaveProperty('profitUsd');
 
     const disabledModel = await app.inject({
       method: 'PUT', url: `/v1/admin/ai/models/${modelResponse.json().model.id}`, headers: adminHeaders,
@@ -1063,6 +1071,80 @@ describe('Tariffia merchant and payment API', () => {
       'SELECT balance_units::text AS balance_units FROM credit_accounts WHERE customer_id = $1', [customerId],
     );
     expect(balance.rows[0].balance_units).toBe('97800000');
+  });
+
+  it('serves the dashboards with separate admin and merchant data boundaries', async () => {
+    const adminHeaders = { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' };
+    const adminPage = await app.inject({ method: 'GET', url: '/admin' });
+    expect(adminPage.statusCode).toBe(200);
+    expect(adminPage.headers['content-type']).toContain('text/html');
+    expect(adminPage.body).toContain('data-dashboard="admin"');
+    const merchantPage = await app.inject({ method: 'GET', url: '/merchant' });
+    expect(merchantPage.statusCode).toBe(200);
+    expect(merchantPage.body).toContain('data-dashboard="merchant"');
+    const dashboardScript = await app.inject({ method: 'GET', url: '/assets/dashboard.js' });
+    expect(dashboardScript.statusCode).toBe(200);
+    expect(dashboardScript.headers['content-type']).toContain('javascript');
+
+    const firstMerchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants', headers: adminHeaders,
+      payload: { name: 'Dashboard One', email: 'dashboard-one@example.com', walletAddress: '0x1111111111111111111111111111111111111111' },
+    });
+    const secondMerchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants', headers: adminHeaders,
+      payload: { name: 'Dashboard Two', email: 'dashboard-two@example.com', walletAddress: '0x2222222222222222222222222222222222222222' },
+    });
+    const firstKey = firstMerchant.json().apiKey as string;
+    const secondKey = secondMerchant.json().apiKey as string;
+    const firstMerchantId = firstMerchant.json().merchant.id as string;
+    await app.inject({ method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${firstKey}` }, payload: { externalId: 'one-customer' } });
+    await app.inject({ method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${secondKey}` }, payload: { externalId: 'two-customer' } });
+    await db.query(
+      `INSERT INTO webhook_endpoints (id, merchant_id, name, url, events, secret_ciphertext, secret_nonce, secret_auth_tag)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', firstMerchantId, 'Private URL hook',
+        'https://hooks.example.test/private/path?token=url-secret', ['payment.confirmed'], 'ciphertext-marker', 'nonce-marker', 'tag-marker'],
+    );
+
+    const noAdmin = await app.inject({ method: 'GET', url: '/v1/admin/dashboard/merchants' });
+    expect(noAdmin.statusCode).toBe(401);
+    const noMerchant = await app.inject({ method: 'GET', url: '/v1/dashboard/customers' });
+    expect(noMerchant.statusCode).toBe(401);
+    const firstCustomers = await app.inject({ method: 'GET', url: '/v1/dashboard/customers', headers: { authorization: `Bearer ${firstKey}` } });
+    expect(firstCustomers.statusCode).toBe(200);
+    expect(firstCustomers.json().items).toHaveLength(1);
+    expect(firstCustomers.json().items[0].externalId).toBe('one-customer');
+    const ownEndpoints = await app.inject({ method: 'GET', url: '/v1/dashboard/webhook-endpoints', headers: { authorization: `Bearer ${firstKey}` } });
+    expect(ownEndpoints.statusCode).toBe(200);
+    expect(ownEndpoints.body).not.toContain('url-secret');
+    expect(ownEndpoints.body).not.toContain('ciphertext-marker');
+    expect(ownEndpoints.json().items[0].url).toBe('https://hooks.example.test');
+    const adminMerchants = await app.inject({ method: 'GET', url: '/v1/admin/dashboard/merchants', headers: adminHeaders });
+    expect(adminMerchants.statusCode).toBe(200);
+    expect(adminMerchants.json().items).toHaveLength(2);
+    const allEndpoints = await app.inject({ method: 'GET', url: '/v1/admin/dashboard/webhook-endpoints', headers: adminHeaders });
+    expect(allEndpoints.statusCode).toBe(200);
+    expect(allEndpoints.body).not.toContain('private/path');
+    expect(allEndpoints.body).not.toContain('url-secret');
+    expect(allEndpoints.body).not.toContain('ciphertext-marker');
+    const adminOverview = await app.inject({ method: 'GET', url: '/v1/admin/dashboard/overview', headers: adminHeaders });
+    expect(adminOverview.statusCode).toBe(200);
+    const merchantOverview = await app.inject({ method: 'GET', url: '/v1/dashboard/overview', headers: { authorization: `Bearer ${firstKey}` } });
+    expect(merchantOverview.statusCode).toBe(200);
+    for (const collection of [
+      'customers', 'orders', 'payments', 'usdc-transactions', 'failed-payments', 'credit-accounts',
+      'credit-transactions', 'ai-providers', 'ai-models', 'usage', 'webhook-endpoints', 'webhook-deliveries',
+    ]) {
+      const response = await app.inject({ method: 'GET', url: `/v1/admin/dashboard/${collection}`, headers: adminHeaders });
+      expect(response.statusCode, `admin ${collection}: ${response.body}`).toBe(200);
+    }
+    for (const collection of [
+      'customers', 'orders', 'payments', 'payment-links', 'credit-accounts', 'credit-transactions',
+      'topups', 'usage', 'webhook-endpoints', 'webhook-deliveries',
+    ]) {
+      const response = await app.inject({ method: 'GET', url: `/v1/dashboard/${collection}`, headers: { authorization: `Bearer ${firstKey}` } });
+      expect(response.statusCode, `merchant ${collection}: ${response.body}`).toBe(200);
+    }
   });
 
   function verificationServiceForTest(): PaymentVerificationService {
