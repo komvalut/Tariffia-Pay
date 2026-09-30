@@ -2,7 +2,6 @@ import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import pg, { type Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
-import { config } from './config.js';
 
 export interface Database {
   query<R extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<R>>;
@@ -13,7 +12,7 @@ export interface Database {
 export class PostgresDatabase implements Database {
   private readonly pool: Pool;
 
-  constructor(connectionString = config.DATABASE_URL) {
+  constructor(connectionString: string) {
     this.pool = new pg.Pool({ connectionString, max: 10, idleTimeoutMillis: 30_000 });
   }
 
@@ -44,10 +43,11 @@ export class PostgresDatabase implements Database {
     )`);
     const files = (await readdir(migrationsDir)).filter((name) => /^\d+_[\w-]+\.sql$/.test(name)).sort();
     for (const name of files) {
-      const alreadyApplied = await this.query('SELECT version FROM schema_migrations WHERE version = $1', [name]);
-      if (alreadyApplied.rows.length) continue;
       const sql = await readFile(path.join(migrationsDir, name), 'utf8');
       await this.transaction(async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock(1413567058, 1)');
+        const alreadyApplied = await client.query('SELECT version FROM schema_migrations WHERE version = $1', [name]);
+        if (alreadyApplied.rows.length) return;
         await client.query(sql);
         await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [name]);
       });

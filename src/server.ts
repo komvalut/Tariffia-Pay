@@ -9,7 +9,7 @@ import { WebhookDeliveryWorker } from './services/webhook-delivery-worker.js';
 import { CreditEngine } from './services/credit-engine.js';
 import { safeErrorMetadata } from './safe-logging.js';
 
-const db = new PostgresDatabase();
+const db = new PostgresDatabase(config.DATABASE_URL);
 const paymentAdapter = new BaseUsdcAdapter();
 const verification = new PaymentVerificationService(db, [paymentAdapter]);
 const detector = new UsdcPaymentDetector(db, paymentAdapter, verification);
@@ -18,25 +18,54 @@ const webhookWorker = new WebhookDeliveryWorker(db, fetch, [credits], { pinDns: 
 const app = await buildApp({ db, migrate: () => db.migrate(), paymentAdapter, verification, creditEngine: credits });
 let detectorTimer: NodeJS.Timeout | undefined;
 let webhookTimer: NodeJS.Timeout | undefined;
+let detectorRun: Promise<void> | undefined;
+let webhookRun: Promise<void> | undefined;
+let shutdownRun: Promise<void> | undefined;
 
-const shutdown = async () => {
+const shutdown = (): Promise<void> => {
+  if (shutdownRun) return shutdownRun;
   if (detectorTimer) clearInterval(detectorTimer);
   if (webhookTimer) clearInterval(webhookTimer);
-  await app.close();
-  await db.close();
-  process.exit(0);
+  shutdownRun = (async () => {
+    try {
+      await app.close();
+      await Promise.all([detectorRun, webhookRun].filter((run): run is Promise<void> => run !== undefined));
+    } finally {
+      await db.close();
+    }
+  })();
+  return shutdownRun;
 };
 
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
+const handleShutdown = () => {
+  void shutdown().catch((error) => {
+    app.log.error(safeErrorMetadata(error), 'Graceful shutdown failed');
+    process.exitCode = 1;
+  });
+};
+process.once('SIGINT', handleShutdown);
+process.once('SIGTERM', handleShutdown);
 
 try {
   await app.listen({ host: '0.0.0.0', port: config.PORT });
-  const runDetector = () => detector.pollOnce().catch((error) => app.log.error(safeErrorMetadata(error), 'USDC payment detection failed'));
+  const runDetector = () => {
+    if (detectorRun) return detectorRun;
+    detectorRun = detector.pollOnce()
+      .catch((error) => app.log.error(safeErrorMetadata(error), 'USDC payment detection failed'))
+      .finally(() => { detectorRun = undefined; });
+    return detectorRun;
+  };
   void runDetector();
   detectorTimer = setInterval(runDetector, config.PAYMENT_DETECTOR_INTERVAL_MS);
   detectorTimer.unref();
-  const runWebhooks = () => webhookWorker.runOnce().catch((error) => app.log.error(safeErrorMetadata(error), 'Webhook worker failed'));
+  const runWebhooks = () => {
+    if (webhookRun) return webhookRun;
+    webhookRun = webhookWorker.runOnce()
+      .then(() => undefined)
+      .catch((error) => app.log.error(safeErrorMetadata(error), 'Webhook worker failed'))
+      .finally(() => { webhookRun = undefined; });
+    return webhookRun;
+  };
   void runWebhooks();
   webhookTimer = setInterval(runWebhooks, config.WEBHOOK_WORKER_INTERVAL_MS);
   webhookTimer.unref();

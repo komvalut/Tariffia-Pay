@@ -1,3 +1,29 @@
+x-database-url: &database-url "postgres://tariffia:${POSTGRES_PASSWORD:?Set a URL-safe POSTGRES_PASSWORD in .env}@db:5432/tariffia"
+
+x-api-environment: &api-environment
+  NODE_ENV: ${NODE_ENV:-production}
+  PORT: 8080
+  DATABASE_URL: *database-url
+  TRUST_PROXY: ${TRUST_PROXY:-false}
+  API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-300}
+  ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
+  API_KEY_PEPPER: ${API_KEY_PEPPER:?Set API_KEY_PEPPER in .env}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in .env (HTTPS is required in production)}
+  BASE_RPC_URL: ${BASE_RPC_URL:-https://mainnet.base.org}
+  USDC_TOKEN_ADDRESS: ${USDC_TOKEN_ADDRESS:-0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913}
+  USDC_MIN_CONFIRMATIONS: ${USDC_MIN_CONFIRMATIONS:-12}
+  PAYMENT_DETECTOR_INTERVAL_MS: ${PAYMENT_DETECTOR_INTERVAL_MS:-10000}
+  PAYMENT_SCAN_LOOKBACK_BLOCKS: ${PAYMENT_SCAN_LOOKBACK_BLOCKS:-100}
+  PAYMENT_SCAN_BLOCK_RANGE: ${PAYMENT_SCAN_BLOCK_RANGE:-500}
+  PAYMENT_EXPIRATION_MINUTES: ${PAYMENT_EXPIRATION_MINUTES:-60}
+  WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?Set WEBHOOK_ENCRYPTION_KEY in .env}
+  WEBHOOK_WORKER_INTERVAL_MS: ${WEBHOOK_WORKER_INTERVAL_MS:-3000}
+  WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-8}
+  WEBHOOK_REQUEST_TIMEOUT_MS: ${WEBHOOK_REQUEST_TIMEOUT_MS:-10000}
+  CREDITS_PER_USDC_RATE: ${CREDITS_PER_USDC_RATE:-100}
+  CREDIT_MINIMUM_TOPUP_USDC: ${CREDIT_MINIMUM_TOPUP_USDC:-1.000000}
+  CREDIT_MAXIMUM_TOPUP_USDC: ${CREDIT_MAXIMUM_TOPUP_USDC:-1000.000000}
+
 services:
   db:
     image: postgres:16-alpine
@@ -5,7 +31,8 @@ services:
     environment:
       POSTGRES_DB: tariffia
       POSTGRES_USER: tariffia
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a URL-safe POSTGRES_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     volumes:
       - tariffia-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -13,38 +40,53 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+      start_period: 10s
 
-  api:
+  migrate:
     build: .
-    restart: unless-stopped
+    command: ["node", "dist/migrate.js"]
+    restart: "no"
+    init: true
     depends_on:
       db:
         condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
-      PORT: 8080
-      DATABASE_URL: postgres://tariffia:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/tariffia
-      TRUST_PROXY: ${TRUST_PROXY:-false}
-      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-300}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
-      API_KEY_PEPPER: ${API_KEY_PEPPER:?Set API_KEY_PEPPER in .env}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in .env (HTTPS is required in production)}
-      BASE_RPC_URL: ${BASE_RPC_URL:-https://mainnet.base.org}
-      USDC_TOKEN_ADDRESS: ${USDC_TOKEN_ADDRESS:-0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913}
-      USDC_MIN_CONFIRMATIONS: ${USDC_MIN_CONFIRMATIONS:-12}
-      PAYMENT_DETECTOR_INTERVAL_MS: ${PAYMENT_DETECTOR_INTERVAL_MS:-10000}
-      PAYMENT_SCAN_LOOKBACK_BLOCKS: ${PAYMENT_SCAN_LOOKBACK_BLOCKS:-100}
-      PAYMENT_SCAN_BLOCK_RANGE: ${PAYMENT_SCAN_BLOCK_RANGE:-500}
-      PAYMENT_EXPIRATION_MINUTES: ${PAYMENT_EXPIRATION_MINUTES:-60}
-      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?Set WEBHOOK_ENCRYPTION_KEY in .env}
-      WEBHOOK_WORKER_INTERVAL_MS: ${WEBHOOK_WORKER_INTERVAL_MS:-3000}
-      WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-8}
-      WEBHOOK_REQUEST_TIMEOUT_MS: ${WEBHOOK_REQUEST_TIMEOUT_MS:-10000}
-      CREDITS_PER_USDC_RATE: ${CREDITS_PER_USDC_RATE:-100}
-      CREDIT_MINIMUM_TOPUP_USDC: ${CREDIT_MINIMUM_TOPUP_USDC:-1.000000}
-      CREDIT_MAXIMUM_TOPUP_USDC: ${CREDIT_MAXIMUM_TOPUP_USDC:-1000.000000}
+      DATABASE_URL: *database-url
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  api:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 75s
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *api-environment
     ports:
-      - "${PORT:-8080}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ready').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   tariffia-postgres:

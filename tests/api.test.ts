@@ -1150,6 +1150,23 @@ describe('Tariffia merchant and payment API', () => {
     }
   });
 
+  it('reports readiness from database availability without exposing database errors', async () => {
+    const ready = await app.inject({ method: 'GET', url: '/ready' });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toMatchObject({ status: 'ready', service: 'tariffia-pay-api' });
+
+    const originalQuery = db.query;
+    db.query = (async () => { throw new Error('private database connection detail'); }) as Database['query'];
+    try {
+      const unavailable = await app.inject({ method: 'GET', url: '/ready' });
+      expect(unavailable.statusCode).toBe(503);
+      expect(unavailable.json()).toMatchObject({ status: 'not_ready', service: 'tariffia-pay-api' });
+      expect(unavailable.body).not.toContain('private database connection detail');
+    } finally {
+      db.query = originalQuery;
+    }
+  });
+
   it('adds security headers and applies the configured global API rate limit', async () => {
     const health = await app.inject({ method: 'GET', url: '/health' });
     expect(health.headers['x-content-type-options']).toBe('nosniff');

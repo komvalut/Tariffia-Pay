@@ -102,6 +102,16 @@ export async function buildApp({ db, migrate, paymentAdapter, verification, cred
     return reply.send({ status: 'ok', service: 'tariffia-pay-api' });
   });
 
+  app.get('/ready', async (_request, reply) => {
+    try {
+      await db.query('SELECT 1');
+      return reply.send({ status: 'ready', service: 'tariffia-pay-api' });
+    } catch (error) {
+      app.log.warn(safeErrorMetadata(error), 'Readiness check failed');
+      return reply.code(503).send({ status: 'not_ready', service: 'tariffia-pay-api' });
+    }
+  });
+
   await app.register(merchantRoutes, { db });
   await app.register(apiKeyRoutes, { db });
   await app.register(customerRoutes, { db });
