@@ -9,11 +9,13 @@ import { PaymentVerificationService } from './services/payment-verification-serv
 import { customerRoutes } from './modules/customers.js';
 import { checkoutRoutes } from './modules/checkout.js';
 import { apiKeyRoutes } from './modules/api-keys.js';
+import { adminWebhookRoutes } from './modules/admin-webhooks.js';
 import { ledgerRoutes } from './modules/ledger.js';
 import { merchantRoutes } from './modules/merchants.js';
 import { orderRoutes } from './modules/orders.js';
 import { paymentLinkRoutes } from './modules/payment-links.js';
 import { paymentRoutes } from './modules/payments.js';
+import { webhookRoutes } from './modules/webhooks.js';
 import { PaymentCoreService } from './services/payment-core-service.js';
 
 type AppOptions = {
@@ -57,6 +59,8 @@ export async function buildApp({ db, migrate, paymentAdapter, verification }: Ap
   await app.register(paymentLinkRoutes, { db, paymentCore });
   await app.register(paymentRoutes, { db, verification: paymentVerification });
   await app.register(checkoutRoutes, { db, verification: paymentVerification });
+  await app.register(webhookRoutes, { db });
+  await app.register(adminWebhookRoutes, { db });
   await app.register(ledgerRoutes, { db });
   return app;
 }

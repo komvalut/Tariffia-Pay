@@ -27,7 +27,7 @@ export const paymentRoutes: FastifyPluginAsync<{ db: Database; verification: Pay
     const { paymentId } = request.params as { paymentId: string };
     const body = parseBody(verifyPaymentSchema, request.body);
     const result = await verification.process(paymentId, merchant.id, body.transactionHash);
-    const statusCode = result.status === 'CONFIRMED' ? 200 : 202;
+    const statusCode = ['CONFIRMED', 'FAILED'].includes(result.status) ? 200 : 202;
     return reply.code(statusCode).send({ payment: result });
   });
 };

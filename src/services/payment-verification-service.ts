@@ -2,6 +2,8 @@ import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import type { PaymentAdapter, PaymentVerificationResult } from '../payment-adapter.js';
 import { newId } from '../security.js';
+import { enqueueWebhookEvent } from '../webhooks/outbox.js';
+import type { PoolClient } from 'pg';
 
 type PaymentRecord = {
   id: string;
@@ -21,10 +23,12 @@ type PaymentRecord = {
 };
 
 export type PaymentProcessingResult = {
-  status: 'PENDING' | 'DETECTED' | 'CONFIRMED';
+  status: 'PENDING' | 'DETECTED' | 'CONFIRMED' | 'FAILED';
   transactionHash: string;
   confirmations: number;
   alreadyConfirmed?: boolean;
+  alreadyFailed?: boolean;
+  failureReason?: string;
 };
 
 export class PaymentVerificationService {
@@ -60,6 +64,12 @@ export class PaymentVerificationService {
       }
       return { status: 'CONFIRMED', transactionHash: normalizedHash, confirmations: 0, alreadyConfirmed: true };
     }
+    if (payment.status === 'FAILED') {
+      if (payment.tx_hash?.toLowerCase() !== normalizedHash) {
+        throw new HttpError(409, 'Payment already failed with a different transaction', 'payment_already_failed');
+      }
+      return { status: 'FAILED', transactionHash: normalizedHash, confirmations: 0, alreadyFailed: true };
+    }
     if (!['PENDING', 'DETECTED'].includes(payment.status)) {
       throw new HttpError(409, `Payment cannot be verified from status ${payment.status}`, 'invalid_payment_state');
     }
@@ -82,6 +92,14 @@ export class PaymentVerificationService {
 
     if (verification.state === 'rejected') {
       throw new HttpError(422, verification.reason, 'transaction_verification_failed');
+    }
+    if (verification.state === 'failed') {
+      const alreadyFailed = await this.fail(payment, normalizedHash, verification);
+      return {
+        status: 'FAILED', transactionHash: normalizedHash, confirmations: 0,
+        failureReason: verification.reason,
+        ...(alreadyFailed ? { alreadyFailed: true } : {}),
+      };
     }
     if (verification.state === 'not_found') {
       const alreadyConfirmed = await this.recordSubmittedHash(payment, normalizedHash);
@@ -156,6 +174,65 @@ export class PaymentVerificationService {
           WHERE id = $1 AND status = 'PENDING'`,
         [payment.id, transactionHash],
       );
+      await this.appendDetectedEvent(client, payment, transactionHash);
+      return false;
+    });
+  }
+
+  private async fail(payment: PaymentRecord, transactionHash: string, failure: Extract<PaymentVerificationResult, { state: 'failed' }>): Promise<boolean> {
+    return this.db.transaction(async (client) => {
+      const locked = await client.query<Pick<PaymentRecord, 'status' | 'tx_hash'>>(
+        'SELECT status, tx_hash FROM payments WHERE id = $1 AND merchant_id = $2 FOR UPDATE',
+        [payment.id, payment.merchant_id],
+      );
+      const current = locked.rows[0];
+      if (!current) throw new HttpError(404, 'Payment not found', 'not_found');
+      if (current.status === 'FAILED') {
+        if (current.tx_hash?.toLowerCase() === transactionHash) return true;
+        throw new HttpError(409, 'Payment already failed with a different transaction', 'payment_already_failed');
+      }
+      if (!['PENDING', 'DETECTED'].includes(current.status)) {
+        throw new HttpError(409, `Payment cannot fail from status ${current.status}`, 'invalid_payment_state');
+      }
+      if (current.tx_hash && current.tx_hash.toLowerCase() !== transactionHash) {
+        throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
+      }
+      if (current.status === 'PENDING') {
+        await client.query(
+          `UPDATE payments SET status = 'DETECTED', tx_hash = $2, detected_at = COALESCE(detected_at, now()), updated_at = now()
+            WHERE id = $1 AND status = 'PENDING'`,
+          [payment.id, transactionHash],
+        );
+        await this.appendDetectedEvent(client, payment, transactionHash);
+      }
+      const order = await client.query(
+        `UPDATE orders SET status = 'FAILED', updated_at = now()
+          WHERE id = $1 AND merchant_id = $2 AND status IN ('CREATED', 'PENDING') RETURNING id`,
+        [payment.order_id, payment.merchant_id],
+      );
+      if (!order.rows[0]) throw new HttpError(409, 'Order is not payable in its current state', 'invalid_order_state');
+      await client.query(
+        `UPDATE payments SET status = 'FAILED', tx_hash = $2, failure_reason = $3, updated_at = now()
+          WHERE id = $1`,
+        [payment.id, transactionHash, failure.reason],
+      );
+      await client.query(
+        `INSERT INTO ledger_entries (id, merchant_id, order_id, payment_id, entry_type, amount, currency, reference, metadata)
+         VALUES ($1, $2, $3, $4, 'PAYMENT_FAILED', 0, $5, $6, $7::jsonb)`,
+        [newId(), payment.merchant_id, payment.order_id, payment.id, payment.currency, transactionHash,
+          JSON.stringify({ amount: payment.amount, network: payment.network, reason: failure.reason, blockNumber: failure.blockNumber.toString() })],
+      );
+      await enqueueWebhookEvent({
+        client,
+        merchantId: payment.merchant_id,
+        eventType: 'payment.failed',
+        resourceId: payment.id,
+        data: {
+          paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
+          currency: payment.currency, network: payment.network, transactionHash,
+          reason: failure.reason, status: 'FAILED',
+        },
+      });
       return false;
     });
   }
@@ -177,6 +254,14 @@ export class PaymentVerificationService {
       }
       if (current.tx_hash && current.tx_hash.toLowerCase() !== transactionHash) {
         throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
+      }
+      if (current.status === 'PENDING') {
+        await client.query(
+          `UPDATE payments SET status = 'DETECTED', tx_hash = $2, detected_at = COALESCE(detected_at, now()), updated_at = now()
+            WHERE id = $1 AND status = 'PENDING'`,
+          [payment.id, transactionHash],
+        );
+        await this.appendDetectedEvent(client, payment, transactionHash, verification.confirmations);
       }
 
       const order = await client.query(
@@ -203,7 +288,48 @@ export class PaymentVerificationService {
           JSON.stringify({ network: payment.network, tokenAddress: payment.token_address, confirmations: verification.confirmations, blockNumber: verification.blockNumber.toString() }),
         ],
       );
+      await enqueueWebhookEvent({
+        client,
+        merchantId: payment.merchant_id,
+        eventType: 'payment.confirmed',
+        resourceId: payment.id,
+        data: {
+          paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
+          currency: payment.currency, network: payment.network, transactionHash,
+          confirmations: verification.confirmations, status: 'CONFIRMED',
+        },
+      });
+      await enqueueWebhookEvent({
+        client,
+        merchantId: payment.merchant_id,
+        eventType: 'order.paid',
+        resourceId: payment.order_id,
+        data: {
+          orderId: payment.order_id, paymentId: payment.id, amount: payment.amount,
+          currency: payment.currency, transactionHash, status: 'PAID',
+        },
+      });
       return false;
+    });
+  }
+
+  private async appendDetectedEvent(client: PoolClient, payment: PaymentRecord, transactionHash: string, confirmations = 0): Promise<void> {
+    await client.query(
+      `INSERT INTO ledger_entries (id, merchant_id, order_id, payment_id, entry_type, amount, currency, reference, metadata)
+       VALUES ($1, $2, $3, $4, 'PAYMENT_DETECTED', 0, $5, $6, $7::jsonb)`,
+      [newId(), payment.merchant_id, payment.order_id, payment.id, payment.currency, transactionHash,
+        JSON.stringify({ amount: payment.amount, network: payment.network, confirmations })],
+    );
+    await enqueueWebhookEvent({
+      client,
+      merchantId: payment.merchant_id,
+      eventType: 'payment.detected',
+      resourceId: payment.id,
+      data: {
+        paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
+        currency: payment.currency, network: payment.network, transactionHash,
+        confirmations, status: 'DETECTED',
+      },
     });
   }
 }

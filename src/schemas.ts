@@ -39,3 +39,36 @@ export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 export const verifyPaymentSchema = z.object({
   transactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Transaction hash must be a 32-byte EVM hash'),
 });
+
+export const webhookEventTypes = [
+  'payment.created',
+  'payment.detected',
+  'payment.confirmed',
+  'payment.failed',
+  'payment.expired',
+  'order.paid',
+] as const;
+export type WebhookEventType = typeof webhookEventTypes[number];
+
+const webhookEventsSchema = z.array(z.enum(webhookEventTypes)).min(1).refine(
+  (events) => new Set(events).size === events.length,
+  'Webhook event types must not contain duplicates',
+);
+const webhookSecretSchema = z.string().min(32).max(256);
+
+export const createWebhookSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  url: z.string().url().max(2048),
+  events: webhookEventsSchema,
+  secret: webhookSecretSchema,
+});
+
+export const updateWebhookSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  url: z.string().url().max(2048).optional(),
+  events: webhookEventsSchema.optional(),
+  secret: webhookSecretSchema.optional(),
+  enabled: z.boolean().optional(),
+}).refine((input) => Object.values(input).some((value) => value !== undefined), {
+  message: 'At least one endpoint field must be provided',
+});

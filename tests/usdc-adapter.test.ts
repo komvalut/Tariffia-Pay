@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   encodeAbiParameters,
+  encodeFunctionData,
   encodeEventTopics,
   getAddress,
   parseAbiItem,
@@ -15,6 +16,11 @@ const recipient = getAddress('0x2222222222222222222222222222222222222222');
 const otherRecipient = getAddress('0x3333333333333333333333333333333333333333');
 const transactionHash = `0x${'d'.repeat(64)}` as Hash;
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
+const transferFunction = [{
+  type: 'function', name: 'transfer', stateMutability: 'nonpayable',
+  inputs: [{ name: 'to', type: 'address' }, { name: 'value', type: 'uint256' }],
+  outputs: [{ type: 'bool' }],
+}] as const;
 const createdAt = new Date(1_700_000_000_000);
 
 function adapterFixture(options: {
@@ -45,6 +51,10 @@ function adapterFixture(options: {
     getTransactionReceipt: options.receiptMissing
       ? vi.fn().mockRejectedValue(new TransactionReceiptNotFoundError({ hash: transactionHash }))
       : vi.fn().mockResolvedValue(receipt),
+    getTransaction: vi.fn().mockResolvedValue({
+      to: token,
+      input: encodeFunctionData({ abi: transferFunction, functionName: 'transfer', args: [recipient, 4_500_000n] }),
+    }),
     getBlock: vi.fn().mockResolvedValue({ timestamp: options.blockTimestamp ?? 1_700_000_000n }),
     getBlockNumber: vi.fn().mockResolvedValue(options.head ?? 111n),
     getLogs: vi.fn().mockResolvedValue([{
@@ -134,10 +144,17 @@ describe('Base USDC adapter', () => {
       .resolves.toMatchObject({ state: 'rejected', reason: expect.stringContaining('recipient and exact amount') });
   });
 
-  it('rejects reverted receipts and treats a not-yet-mined transaction as pending', async () => {
+  it('recognizes a matching reverted payment, rejects unrelated failures, and handles unmined transactions', async () => {
     const reverted = adapterFixture({ receiptStatus: 'reverted' });
     await expect(reverted.adapter.verifyTransaction(input))
-      .resolves.toMatchObject({ state: 'rejected', reason: 'Transaction execution failed' });
+      .resolves.toMatchObject({ state: 'failed', reason: 'USDC transfer transaction reverted', blockNumber: 100n });
+    const unrelated = adapterFixture({ receiptStatus: 'reverted' });
+    unrelated.client.getTransaction.mockResolvedValue({
+      to: token,
+      input: encodeFunctionData({ abi: transferFunction, functionName: 'transfer', args: [otherRecipient, 4_500_000n] }),
+    });
+    await expect(unrelated.adapter.verifyTransaction(input))
+      .resolves.toMatchObject({ state: 'rejected', reason: 'Reverted transfer does not match recipient and exact amount' });
     const missing = adapterFixture({ receiptMissing: true });
     await expect(missing.adapter.verifyTransaction(input)).resolves.toEqual({ state: 'not_found' });
   });

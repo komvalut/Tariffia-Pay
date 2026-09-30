@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-3 status
+## Phase 1-4 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links and QR payments. Webhooks, credits, AI pricing, subscriptions and the admin dashboard are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments and signed/retried merchant webhooks. Credits, AI pricing, subscriptions and other payment methods are later phases.
 
 ## Run locally
 
@@ -12,7 +12,7 @@ Requirements: Node.js 20+ and Docker Compose.
 
 ```sh
 cp .env.example .env
-# Replace POSTGRES_PASSWORD, ADMIN_API_KEY and API_KEY_PEPPER with independent random secrets.
+# Replace all placeholder secrets. WEBHOOK_ENCRYPTION_KEY must be 64 hex characters.
 docker compose up --build
 ```
 
@@ -63,10 +63,9 @@ Other merchant endpoints:
 - `GET /v1/payments/:paymentId`
 - `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
 - `POST /v1/payment-links` with the same order payload and `Idempotency-Key`
-- Public checkout: `GET /p/:paymentId`
-- Public checkout details/status: `GET /v1/public/payments/:paymentId`
-- Public customer verification: `POST /v1/public/payments/:paymentId/verify`
-- Checkout QR image: `GET /p/:paymentId/qr.png`
+- `GET /v1/customers/:customerId`
+- `GET /v1/ledger?limit=50`
+- `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
 
 Create a shareable link from the merchant API:
 
@@ -78,9 +77,6 @@ curl -X POST http://localhost:8080/v1/payment-links \
 ```
 
 The response contains `checkoutUrl` and `qrUrl`. The QR encodes that same `checkoutUrl`; it resolves to the server-owned payment ID and canonical payment details. The hosted page is responsive and supports EIP-1193 wallets on Base.
-- `GET /v1/customers/:customerId`
-- `GET /v1/ledger?limit=50`
-- `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
 
 Every merchant-owned read is scoped to the authenticated merchant. The ledger database trigger rejects updates and deletes.
 
@@ -108,6 +104,30 @@ The hosted page at `/p/:paymentId` fetches a limited public view of the existing
 
 The QR image encodes the same hosted checkout URL and payment ID, so scanning it resolves to the same server-owned payment request rather than a second payment or client-defined amount. Customers without an injected wallet can still scan/open the page and review or copy the payment details for a Base wallet.
 
+Checkout routes are `GET /p/:paymentId`, `GET /p/:paymentId/qr.png`, `GET /v1/public/payments/:paymentId` and `POST /v1/public/payments/:paymentId/verify`.
+
+## Webhooks
+
+Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired` and `order.paid`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger transition, then delivered asynchronously.
+
+Payments expire after `PAYMENT_EXPIRATION_MINUTES` only when no transaction hash has been submitted. A submitted or on-chain-detected transfer is not expired while verification is pending. `payment.failed` is emitted only when the configured USDC contract receipt proves that the matching transfer call reverted; an arbitrary invalid hash does not fail the payment.
+
+Create an endpoint; the secret is sent only in the request and is never returned:
+
+```sh
+curl -X POST http://localhost:8080/v1/webhooks \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -d '{"name":"Store events","url":"https://merchant.example/webhooks/tariffia","events":["payment.confirmed","order.paid"],"secret":"REPLACE_WITH_A_LONG_RANDOM_SECRET"}'
+```
+
+Webhook secrets are AES-256-GCM encrypted at rest using `WEBHOOK_ENCRYPTION_KEY`; create, update, list and admin log responses never return either the secret or its encrypted value. The encryption key must be stable across restarts and deployments; back it up securely and use a unique 32-byte random key (64 hex characters) in production. Rotate an endpoint's HMAC secret through `PATCH /v1/webhooks/:endpointId` by sending a new `secret`; Tariffia will not echo it.
+
+Each JSON event has a unique UUID `id`, `type`, `createdAt` and `data`. Deliveries include `X-Tariffia-Event-Id`, `X-Tariffia-Timestamp` and `X-Tariffia-Signature: t=<unix-seconds>,v1=<hex-hmac-sha256>`. The signature is HMAC-SHA256 over `<timestamp>.<exact raw request body>`. Receivers should verify the signature with a bounded timestamp tolerance and deduplicate by event ID. The helper in `src/webhooks/signature.ts` implements verification.
+
+Non-2xx responses, timeouts and connection failures are retried with exponential backoff and jitter up to `WEBHOOK_MAX_ATTEMPTS`. Every attempt and the latest delivery status/error are visible to the merchant; the admin API can inspect delivery status across merchants. Production endpoints must use HTTPS and resolve to public IPs. Redirects are not followed.
+
+Endpoint management and logs are available at `GET/POST /v1/webhooks`, `PATCH/DELETE /v1/webhooks/:endpointId`, `GET /v1/webhooks/:endpointId/deliveries`, and `GET /v1/webhooks/:endpointId/deliveries/:deliveryId/attempts`. Admins use `GET /v1/admin/webhook-deliveries` and `GET /v1/admin/webhook-deliveries/:deliveryId/attempts` with the server-side admin key.
+
 ## Security and custody
 
 - The admin credential and API-key pepper are server-only environment secrets.
@@ -117,7 +137,7 @@ The QR image encodes the same hosted checkout URL and payment ID, so scanning it
 
 ## Architecture
 
-`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; transaction detection and checkout rendering are separate from merchant routes. `src/modules/` keeps merchant, customer, order, payment, payment-link, checkout, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
+`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; `src/services/webhook-delivery-worker.ts` handles expiry and asynchronous signed delivery. `src/webhooks/` contains secret encryption, signatures and transactional outbox helpers. `src/modules/` keeps merchant, customer, order, payment, payment-link, checkout, webhook, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
 
 ## Development checks
 

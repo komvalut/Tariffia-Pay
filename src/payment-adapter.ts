@@ -30,6 +30,7 @@ export type PaymentVerificationResult =
   | { state: 'not_found' }
   | { state: 'pending'; detected: boolean; confirmations: number; blockNumber?: bigint }
   | { state: 'rejected'; reason: string }
+  | { state: 'failed'; reason: string; blockNumber: bigint }
   | { state: 'verified'; confirmations: number; blockNumber: bigint };
 
 /** Adapter boundary: domain services depend on a payment request, not a chain SDK. */

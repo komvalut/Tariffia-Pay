@@ -1,5 +1,6 @@
 import {
   createPublicClient,
+  decodeFunctionData,
   decodeEventLog,
   getAddress,
   http,
@@ -31,6 +32,13 @@ const metadataAbi = [{
   stateMutability: 'view',
   inputs: [],
   outputs: [{ type: 'uint8' }],
+}] as const;
+const transferFunction = [{
+  type: 'function',
+  name: 'transfer',
+  stateMutability: 'nonpayable',
+  inputs: [{ name: 'to', type: 'address' }, { name: 'value', type: 'uint256' }],
+  outputs: [{ type: 'bool' }],
 }] as const;
 type BaseRpcClient = PublicClient<HttpTransport, typeof base>;
 
@@ -102,10 +110,29 @@ export class BaseUsdcAdapter implements PaymentAdapter {
       if (error instanceof TransactionReceiptNotFoundError) return { state: 'not_found' };
       throw error;
     }
-    if (receipt.status !== 'success') return { state: 'rejected', reason: 'Transaction execution failed' };
-
     const recipient = input.recipientAddress.toLowerCase();
     const expectedAmount = parseUnits(input.amount, 6);
+    const block = await this.client.getBlock({ blockNumber: receipt.blockNumber });
+    if (Number(block.timestamp) < Math.floor(input.createdAt.getTime() / 1000) - 60) {
+      return { state: 'rejected', reason: 'Transfer predates the payment request' };
+    }
+    if (receipt.status === 'reverted') {
+      const transaction = await this.client.getTransaction({ hash: input.transactionHash as Hash });
+      if (transaction.to?.toLowerCase() !== this.tokenAddress.toLowerCase()) {
+        return { state: 'rejected', reason: 'Reverted transaction did not call the configured USDC token' };
+      }
+      try {
+        const decoded = decodeFunctionData({ abi: transferFunction, data: transaction.input });
+        if (decoded.functionName !== 'transfer' ||
+            decoded.args[0].toLowerCase() !== recipient || decoded.args[1] !== expectedAmount) {
+          return { state: 'rejected', reason: 'Reverted transfer does not match recipient and exact amount' };
+        }
+      } catch {
+        return { state: 'rejected', reason: 'Reverted transaction is not the expected USDC transfer' };
+      }
+      return { state: 'failed', reason: 'USDC transfer transaction reverted', blockNumber: receipt.blockNumber };
+    }
+
     let matchingTransfer = false;
     for (const log of receipt.logs) {
       if (log.address.toLowerCase() !== this.tokenAddress.toLowerCase()) continue;
@@ -125,10 +152,6 @@ export class BaseUsdcAdapter implements PaymentAdapter {
       return { state: 'rejected', reason: 'No USDC Transfer log matches the configured token, recipient and exact amount' };
     }
 
-    const block = await this.client.getBlock({ blockNumber: receipt.blockNumber });
-    if (Number(block.timestamp) < Math.floor(input.createdAt.getTime() / 1000) - 60) {
-      return { state: 'rejected', reason: 'Transfer predates the payment request' };
-    }
     const head = await this.client.getBlockNumber();
     const confirmations = head >= receipt.blockNumber ? Number(head - receipt.blockNumber + 1n) : 0;
     if (confirmations < config.USDC_MIN_CONFIRMATIONS) {

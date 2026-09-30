@@ -10,7 +10,9 @@ import { parseUnits } from 'viem';
 import type { AdapterPaymentDetails, PaymentAdapter, PaymentVerificationResult } from '../src/payment-adapter.js';
 import { PaymentVerificationService } from '../src/services/payment-verification-service.js';
 import { UsdcPaymentDetector } from '../src/services/usdc-payment-detector.js';
+import { WebhookDeliveryWorker } from '../src/services/webhook-delivery-worker.js';
 import { checkoutUrlForPayment } from '../src/checkout-links.js';
+import { verifyWebhookSignature } from '../src/webhooks/signature.js';
 
 const usdcAddress = '0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913';
 
@@ -38,6 +40,7 @@ describe('Tariffia merchant and payment API', () => {
     } else {
       await pool.query(phaseTwoMigration);
     }
+    await pool.query(await readFile(path.join(migrationsDir, '0003_webhooks.sql'), 'utf8'));
 
     db = {
       query: (text, values = []) => pool.query(text, values),
@@ -274,7 +277,8 @@ describe('Tariffia merchant and payment API', () => {
     expect(retry.json().payment.alreadyConfirmed).toBe(true);
 
     const ledger = await app.inject({ method: 'GET', url: '/v1/ledger', headers: { authorization: `Bearer ${apiKey}` } });
-    expect(ledger.json().entries).toHaveLength(2);
+    expect(ledger.json().entries).toHaveLength(3);
+    expect(ledger.json().entries.map((entry: { entryType: string }) => entry.entryType)).toContain('PAYMENT_DETECTED');
     const confirmation = ledger.json().entries.find((entry: { entryType: string }) => entry.entryType === 'PAYMENT_CONFIRMED');
     expect(confirmation.reference).toBe(transactionHash);
   });
@@ -521,6 +525,235 @@ describe('Tariffia merchant and payment API', () => {
     expect(customerVerify.json().payment.status).toBe('CONFIRMED');
     const updatedDetails = await app.inject({ method: 'GET', url: `/v1/public/payments/${created.payment.id}` });
     expect(updatedDetails.json().payment.status).toBe('CONFIRMED');
+  });
+
+  it('manages webhook endpoints without ever returning the signing secret', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Hooks Store', email: 'hooks@example.com', walletAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const secret = 'merchant-owned-webhook-secret-keep-this-private-001';
+    const created = await app.inject({
+      method: 'POST', url: '/v1/webhooks',
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Orders API', url: 'http://127.0.0.1:4555/events', events: ['payment.created', 'order.paid'], secret },
+    });
+    expect(created.statusCode).toBe(201);
+    const endpointId = created.json().endpoint.id as string;
+    expect(created.body).not.toContain(secret);
+    expect(created.body).not.toContain('secret_ciphertext');
+
+    const stored = await db.query<{ secret_ciphertext: string }>(
+      'SELECT secret_ciphertext FROM webhook_endpoints WHERE id = $1', [endpointId],
+    );
+    expect(stored.rows[0].secret_ciphertext).not.toContain(secret);
+
+    const rotated = 'rotated-merchant-webhook-secret-private-002';
+    const updated = await app.inject({
+      method: 'PATCH', url: `/v1/webhooks/${endpointId}`,
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Updated endpoint', secret: rotated, enabled: false },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.body).not.toContain(secret);
+    expect(updated.body).not.toContain(rotated);
+    expect(updated.json().endpoint.enabled).toBe(false);
+
+    const listed = await app.inject({ method: 'GET', url: '/v1/webhooks', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body).not.toContain(secret);
+    expect(listed.body).not.toContain(rotated);
+
+    const deleted = await app.inject({ method: 'DELETE', url: `/v1/webhooks/${endpointId}`, headers: { authorization: `Bearer ${apiKey}` } });
+    expect(deleted.statusCode).toBe(204);
+    const afterDelete = await app.inject({ method: 'GET', url: '/v1/webhooks', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(afterDelete.json().endpoints).toHaveLength(0);
+  });
+
+  it('delivers signed webhooks, retries failures, stores attempt logs, and records payment/order events', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Delivery Store', email: 'delivery@example.com', walletAddress: '0xcccccccccccccccccccccccccccccccccccccccc' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const secret = 'delivery-test-webhook-secret-do-not-return-003';
+    const endpoint = await app.inject({
+      method: 'POST', url: '/v1/webhooks',
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: {
+        name: 'Test receiver', url: 'http://127.0.0.1:4556/events',
+        events: ['payment.created', 'payment.confirmed', 'order.paid'], secret,
+      },
+    });
+    const endpointId = endpoint.json().endpoint.id as string;
+    const created = await app.inject({
+      method: 'POST', url: '/v1/payment-links',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'webhook-order-0001' },
+      payload: { description: 'Webhook order', amount: '9.00' },
+    });
+    const paymentId = created.json().payment.id as string;
+    const receivedEvents: string[] = [];
+    let failFirst = true;
+    const worker = new WebhookDeliveryWorker(db, async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      const body = String(init?.body ?? '');
+      const event = JSON.parse(body) as { id: string; type: string };
+      receivedEvents.push(event.type);
+      const timestamp = Number(headers.get('x-tariffia-timestamp'));
+      expect(headers.get('x-tariffia-event-id')).toBe(event.id);
+      expect(verifyWebhookSignature({
+        secret, rawBody: body, signatureHeader: headers.get('x-tariffia-signature') ?? '',
+        timestampHeader: headers.get('x-tariffia-timestamp') ?? undefined, nowSeconds: timestamp,
+      }).valid).toBe(true);
+      if (failFirst) {
+        failFirst = false;
+        return new Response('temporary error', { status: 503 });
+      }
+      return new Response(null, { status: 204 });
+    });
+
+    await worker.runOnce();
+    const firstList = await app.inject({
+      method: 'GET', url: `/v1/webhooks/${endpointId}/deliveries`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(firstList.json().deliveries).toHaveLength(1);
+    const firstDelivery = firstList.json().deliveries[0];
+    expect(firstDelivery.status).toBe('RETRYING');
+    expect(firstDelivery.attempts).toBe(1);
+    const adminRetryLog = await app.inject({
+      method: 'GET', url: '/v1/admin/webhook-deliveries?status=RETRYING',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(adminRetryLog.statusCode).toBe(200);
+    expect(adminRetryLog.json().deliveries[0].lastHttpStatus).toBe(503);
+    expect(adminRetryLog.json().deliveries[0].lastError).toContain('HTTP 503');
+    await db.query('UPDATE webhook_deliveries SET next_attempt_at = now() WHERE id = $1', [firstDelivery.id]);
+
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 765432n };
+    const confirmed = await app.inject({
+      method: 'POST', url: `/v1/payments/${paymentId}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { transactionHash: `0x${'4'.repeat(64)}` },
+    });
+    expect(confirmed.statusCode).toBe(200);
+    await worker.runOnce();
+
+    const deliveries = await app.inject({
+      method: 'GET', url: `/v1/webhooks/${endpointId}/deliveries`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(deliveries.statusCode).toBe(200);
+    expect(deliveries.json().deliveries).toHaveLength(3);
+    expect(deliveries.json().deliveries.every((delivery: { status: string }) => delivery.status === 'SUCCEEDED')).toBe(true);
+    expect(receivedEvents).toContain('payment.created');
+    expect(receivedEvents).toContain('payment.confirmed');
+    expect(receivedEvents).toContain('order.paid');
+
+    const attempts = await app.inject({
+      method: 'GET', url: `/v1/webhooks/${endpointId}/deliveries/${firstDelivery.id}/attempts`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(attempts.json().attempts).toHaveLength(2);
+    expect(attempts.json().attempts.map((attempt: { httpStatus: number }) => attempt.httpStatus)).toEqual([503, 204]);
+
+    const adminLog = await app.inject({
+      method: 'GET', url: '/v1/admin/webhook-deliveries?status=SUCCEEDED',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(adminLog.statusCode).toBe(200);
+    expect(adminLog.json().deliveries).toHaveLength(3);
+    expect(adminLog.body).not.toContain(secret);
+  });
+
+  it('emits detected, failed, and expired payment webhooks from ledger-backed transitions', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Lifecycle Store', email: 'lifecycle@example.com', walletAddress: '0xdddddddddddddddddddddddddddddddddddddddd' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const webhook = await app.inject({
+      method: 'POST', url: '/v1/webhooks',
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: {
+        name: 'Lifecycle events', url: 'http://127.0.0.1:4557/events',
+        events: ['payment.created', 'payment.detected', 'payment.confirmed', 'payment.failed', 'payment.expired', 'order.paid'],
+        secret: 'lifecycle-webhook-secret-that-is-long-enough-004',
+      },
+    });
+    expect(webhook.statusCode).toBe(201);
+
+    const createPayment = async (key: string) => {
+      const response = await app.inject({
+        method: 'POST', url: '/v1/payment-links',
+        headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': key },
+        payload: { description: key, amount: '2.00' },
+      });
+      return response.json();
+    };
+    const detected = await createPayment('lifecycle-detected-001');
+    const failed = await createPayment('lifecycle-failed-001');
+    const expired = await createPayment('lifecycle-expired-001');
+
+    verificationResult = { state: 'pending', detected: true, confirmations: 2, blockNumber: 700n };
+    const detectedResult = await app.inject({
+      method: 'POST', url: `/v1/payments/${detected.payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionHash: `0x${'5'.repeat(64)}` },
+    });
+    expect(detectedResult.json().payment.status).toBe('DETECTED');
+
+    verificationResult = { state: 'failed', reason: 'USDC transfer transaction reverted', blockNumber: 701n };
+    const failedResult = await app.inject({
+      method: 'POST', url: `/v1/payments/${failed.payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionHash: `0x${'6'.repeat(64)}` },
+    });
+    expect(failedResult.statusCode).toBe(200);
+    expect(failedResult.json().payment.status).toBe('FAILED');
+
+    await db.query('UPDATE payments SET expires_at = $2 WHERE id = $1', [expired.payment.id, new Date(Date.now() - 60_000)]);
+    const dueBeforeWorker = await db.query(
+      `SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id
+        WHERE p.id = $1 AND p.status = 'PENDING' AND p.tx_hash IS NULL
+          AND p.expires_at <= now() AND o.status = 'PENDING'`,
+      [expired.payment.id],
+    );
+    expect(dueBeforeWorker.rows).toHaveLength(1);
+    const worker = new WebhookDeliveryWorker(db, async () => new Response(null, { status: 204 }));
+    const workerResult = await worker.runOnce();
+    expect(workerResult.duePayments).toBe(1);
+    expect(workerResult.expiredPayments).toBe(1);
+    const expiryState = await db.query(
+      `SELECT p.status AS "paymentStatus", o.status AS "orderStatus", p.tx_hash AS "txHash", p.expires_at AS "expiresAt"
+         FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.id = $1`,
+      [expired.payment.id],
+    );
+    expect(expiryState.rows[0]).toMatchObject({ paymentStatus: 'EXPIRED', orderStatus: 'EXPIRED' });
+
+    const expiredPayment = await app.inject({
+      method: 'GET', url: `/v1/payments/${expired.payment.id}`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(expiredPayment.json().payment.status).toBe('EXPIRED');
+
+    const events = await db.query<{ event_type: string; id: string }>(
+      `SELECT event_type, id FROM webhook_events WHERE merchant_id = $1`, [merchant.json().merchant.id],
+    );
+    const eventTypes = events.rows.map((row) => row.event_type);
+    expect(eventTypes).toContain('payment.created');
+    expect(eventTypes).toContain('payment.detected');
+    expect(eventTypes).toContain('payment.failed');
+    expect(eventTypes).toContain('payment.expired');
+    expect(new Set(events.rows.map((row) => row.id)).size).toBe(events.rows.length);
+
+    const ledger = await app.inject({ method: 'GET', url: '/v1/ledger', headers: { authorization: `Bearer ${apiKey}` } });
+    const entryTypes = ledger.json().entries.map((entry: { entryType: string }) => entry.entryType);
+    expect(entryTypes).toContain('PAYMENT_DETECTED');
+    expect(entryTypes).toContain('PAYMENT_FAILED');
+    expect(entryTypes).toContain('PAYMENT_EXPIRED');
   });
 
   function verificationServiceForTest(): PaymentVerificationService {

@@ -14,6 +14,11 @@ const schema = z.object({
   PAYMENT_DETECTOR_INTERVAL_MS: z.coerce.number().int().min(1000).default(10_000),
   PAYMENT_SCAN_LOOKBACK_BLOCKS: z.coerce.number().int().min(1).max(10_000).default(100),
   PAYMENT_SCAN_BLOCK_RANGE: z.coerce.number().int().min(1).max(5_000).default(500),
+  PAYMENT_EXPIRATION_MINUTES: z.coerce.number().int().min(1).max(10_080).default(60),
+  WEBHOOK_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/).default('0'.repeat(64)),
+  WEBHOOK_WORKER_INTERVAL_MS: z.coerce.number().int().min(1000).default(3000),
+  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(8),
+  WEBHOOK_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(10_000),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -25,6 +30,7 @@ export const config = parsed.data;
 
 if (config.NODE_ENV === 'production' &&
     (config.ADMIN_API_KEY.startsWith('dev-') || config.API_KEY_PEPPER.startsWith('dev-') ||
-      config.ADMIN_API_KEY.startsWith('replace-with-') || config.API_KEY_PEPPER.startsWith('replace-with-'))) {
-  throw new Error('ADMIN_API_KEY and API_KEY_PEPPER must be changed in production');
+      config.ADMIN_API_KEY.startsWith('replace-with-') || config.API_KEY_PEPPER.startsWith('replace-with-') ||
+      /^0{64}$/i.test(config.WEBHOOK_ENCRYPTION_KEY))) {
+  throw new Error('Admin/API secrets and WEBHOOK_ENCRYPTION_KEY must be changed in production');
 }
