@@ -48,6 +48,7 @@ describe('Tariffia merchant and payment API', () => {
     );
     await pool.query(webhookMigration);
     await pool.query(await readFile(path.join(migrationsDir, '0004_credit_engine.sql'), 'utf8'));
+    await pool.query(await readFile(path.join(migrationsDir, '0005_ai_pricing.sql'), 'utf8'));
 
     db = {
       query: (text, values = []) => pool.query(text, values),
@@ -946,6 +947,122 @@ describe('Tariffia merchant and payment API', () => {
       payload: { creditsPerUsdcRate: 250, minimumTopupUsdc: '10.00', maximumTopupUsdc: '2.00' },
     });
     expect(invalid.statusCode).toBe(400);
+  });
+
+  it('configures AI model pricing and records idempotent usage against the existing credit balance', async () => {
+    const adminHeaders = { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' };
+    const providerWithSecret = await app.inject({
+      method: 'POST', url: '/v1/admin/ai/providers', headers: adminHeaders,
+      payload: { slug: 'secret-provider', name: 'Secret Provider', apiKey: 'must-not-be-accepted' },
+    });
+    expect(providerWithSecret.statusCode).toBe(400);
+    const providerResponse = await app.inject({
+      method: 'POST', url: '/v1/admin/ai/providers', headers: adminHeaders,
+      payload: { slug: 'example-ai', name: 'Example AI' },
+    });
+    expect(providerResponse.statusCode).toBe(201);
+    const providerId = providerResponse.json().provider.id as string;
+    const modelResponse = await app.inject({
+      method: 'POST', url: `/v1/admin/ai/providers/${providerId}/models`, headers: adminHeaders,
+      payload: {
+        slug: 'text-small', name: 'Text Small', enabled: true, pricingMode: 'PER_1K_TOKENS',
+        providerInputCostPer1kUsd: '0.01000000', providerOutputCostPer1kUsd: '0.02000000', markupBps: 1000,
+      },
+    });
+    expect(modelResponse.statusCode).toBe(201);
+    expect(modelResponse.json().model.customerInputPricePer1kUsd).toBeNull();
+    const missingProvider = await app.inject({
+      method: 'POST', url: '/v1/admin/ai/providers/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/models', headers: adminHeaders,
+      payload: { slug: 'orphan-model', name: 'Orphan Model', pricingMode: 'PER_REQUEST' },
+    });
+    expect(missingProvider.statusCode).toBe(404);
+
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants', headers: adminHeaders,
+      payload: { name: 'AI Store', email: 'ai@example.com', walletAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const merchantId = merchant.json().merchant.id as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'ai-customer-1' },
+    });
+    const customerId = customer.json().customer.id as string;
+    await db.query(
+      `INSERT INTO credit_accounts (id, merchant_id, customer_id, balance_units)
+       VALUES ($1, $2, $3, $4)`,
+      ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', merchantId, customerId, '100000000'],
+    );
+
+    const models = await app.inject({ method: 'GET', url: '/v1/ai/models', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(models.statusCode).toBe(200);
+    expect(models.json().models[0]).toMatchObject({
+      provider: 'example-ai', model: 'text-small', pricePerRequestUsd: '0.00000000',
+      inputPricePer1kUsd: '0.01100000', outputPricePer1kUsd: '0.02200000',
+    });
+
+    const payload = {
+      requestId: 'usage-request-0001', customerId, provider: 'example-ai', model: 'text-small',
+      inputTokens: 1000, outputTokens: 500, metadata: { trace: 'trace-1' },
+    };
+    const usage = await app.inject({
+      method: 'POST', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` }, payload,
+    });
+    expect(usage.statusCode).toBe(201);
+    expect(usage.json().usage).toMatchObject({
+      providerCostUsd: '0.02000000', customerPriceUsd: '0.02200000',
+      profitUsd: '0.00200000', creditsDeducted: '2.2', balanceAfter: '97.8',
+    });
+    const replay = await app.inject({
+      method: 'POST', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` }, payload,
+    });
+    expect(replay.statusCode).toBe(201);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.json().usage.id).toBe(usage.json().usage.id);
+
+    const conflict = await app.inject({
+      method: 'POST', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { ...payload, inputTokens: 2000 },
+    });
+    expect(conflict.statusCode).toBe(409);
+    const emptyCustomer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'ai-customer-without-credits' },
+    });
+    const insufficient = await app.inject({
+      method: 'POST', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { ...payload, requestId: 'usage-request-no-credit', customerId: emptyCustomer.json().customer.id },
+    });
+    expect(insufficient.statusCode).toBe(409);
+
+    const history = await app.inject({ method: 'GET', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(history.json().usage).toHaveLength(1);
+    const adminUsage = await app.inject({ method: 'GET', url: '/v1/admin/ai/usage', headers: adminHeaders });
+    expect(adminUsage.statusCode).toBe(200);
+    expect(adminUsage.json().usage).toHaveLength(1);
+    const events = await db.query<{ event_type: string }>(
+      'SELECT event_type FROM webhook_events WHERE merchant_id = $1', [merchantId],
+    );
+    expect(events.rows.map((event) => event.event_type)).toContain('ai.usage.recorded');
+
+    const disabledModel = await app.inject({
+      method: 'PUT', url: `/v1/admin/ai/models/${modelResponse.json().model.id}`, headers: adminHeaders,
+      payload: {
+        slug: 'text-small', name: 'Text Small', enabled: false, pricingMode: 'PER_1K_TOKENS',
+        providerInputCostPer1kUsd: '0.01000000', customerInputPricePer1kUsd: null,
+        providerOutputCostPer1kUsd: '0.02000000', customerOutputPricePer1kUsd: null, markupBps: 1000,
+      },
+    });
+    expect(disabledModel.statusCode).toBe(200);
+    const rejected = await app.inject({
+      method: 'POST', url: '/v1/ai/usage', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { ...payload, requestId: 'usage-request-0002' },
+    });
+    expect(rejected.statusCode).toBe(404);
+    const balance = await db.query<{ balance_units: string }>(
+      'SELECT balance_units::text AS balance_units FROM credit_accounts WHERE customer_id = $1', [customerId],
+    );
+    expect(balance.rows[0].balance_units).toBe('97800000');
   });
 
   function verificationServiceForTest(): PaymentVerificationService {

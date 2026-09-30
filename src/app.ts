@@ -20,6 +20,9 @@ import { creditRoutes } from './modules/credits.js';
 import { adminCreditRoutes } from './modules/admin-credits.js';
 import { PaymentCoreService } from './services/payment-core-service.js';
 import { CreditEngine } from './services/credit-engine.js';
+import { AiPricingEngine } from './services/ai-pricing-engine.js';
+import { adminAiRoutes } from './modules/admin-ai.js';
+import { aiRoutes } from './modules/ai.js';
 
 type AppOptions = {
   db: Database;
@@ -35,6 +38,7 @@ export async function buildApp({ db, migrate, paymentAdapter, verification, cred
   const paymentVerification = verification ?? new PaymentVerificationService(db, [adapter]);
   const paymentCore = new PaymentCoreService(db, adapter);
   const credits = creditEngine ?? new CreditEngine(db);
+  const aiPricing = new AiPricingEngine(db);
   await credits.initialize();
   paymentVerification.addLifecycleHandler(credits);
   const app = Fastify({ logger: true, bodyLimit: 256 * 1024 });
@@ -70,6 +74,8 @@ export async function buildApp({ db, migrate, paymentAdapter, verification, cred
   await app.register(adminWebhookRoutes, { db });
   await app.register(creditRoutes, { db, credits, paymentCore });
   await app.register(adminCreditRoutes, { db, credits });
+  await app.register(adminAiRoutes, { db });
+  await app.register(aiRoutes, { db, aiPricing });
   await app.register(ledgerRoutes, { db });
   return app;
 }

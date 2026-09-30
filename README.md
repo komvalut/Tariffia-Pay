@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-5 status
+## Phase 1-6 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks and an internal customer Credit Engine. AI pricing, subscriptions and other payment methods are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, and configurable AI reseller pricing with usage metering. Subscriptions and other payment methods are later phases.
 
 ## Run locally
 
@@ -69,6 +69,8 @@ Other merchant endpoints:
 - `POST /v1/credits/topups`, `POST /v1/credits/deductions`
 - `GET /v1/credits/:customerId/balance`, `/topups`, `/usage`
 - Admin: `GET/PUT /v1/admin/credits/settings`, `GET /v1/admin/credits/accounts`, `GET /v1/admin/credits/transactions`
+- AI: `GET /v1/ai/models`, `POST /v1/ai/usage`, `GET /v1/ai/usage`
+- Admin AI: `GET/POST /v1/admin/ai/providers`, `PUT /v1/admin/ai/providers/:providerId`, `GET /v1/admin/ai/models`, `POST /v1/admin/ai/providers/:providerId/models`, `PUT /v1/admin/ai/models/:modelId`, `GET /v1/admin/ai/usage`
 
 Create a shareable link from the merchant API:
 
@@ -111,7 +113,7 @@ Checkout routes are `GET /p/:paymentId`, `GET /p/:paymentId/qr.png`, `GET /v1/pu
 
 ## Webhooks
 
-Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired`, `order.paid`, `credit.topup` and `credit.deducted`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger/credit transition, then delivered asynchronously.
+Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired`, `order.paid`, `credit.topup`, `credit.deducted` and `ai.usage.recorded`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger/credit/AI-usage transition, then delivered asynchronously.
 
 Payments expire after `PAYMENT_EXPIRATION_MINUTES` only when no transaction hash has been submitted. A submitted or on-chain-detected transfer is not expired while verification is pending. `payment.failed` is emitted only when the configured USDC contract receipt proves that the matching transfer call reverted; an arbitrary invalid hash does not fail the payment.
 
@@ -145,7 +147,7 @@ USDC top-ups create real Base USDC payment requests through the existing Payment
 
 Credits are issued only inside the same database transaction that confirms the USDC payment, records the credit transaction, updates the account, and appends the separate `CREDIT_TOPUP` CREDITS ledger entry. Deductions use an atomic `balance >= amount` database update, a non-negative balance constraint, and `Idempotency-Key`; concurrent attempts cannot spend the same balance twice. `CREDIT_DEDUCTION` entries use currency `CREDITS`, separate from `PAYMENT_CONFIRMED` entries in USDC. The ledger is an event record, not a wallet-balance calculation.
 
-The `credit.topup` and `credit.deducted` webhook events report internal credit changes. No AI provider, pricing, subscription, payout or cash-out behavior is part of this phase.
+The `credit.topup` and `credit.deducted` webhook events report internal credit changes. Credits remain non-withdrawable internal units and are not a second payment system.
 
 ```sh
 # Create a USDC payment link that will top up this merchant customer after payment verification.
@@ -160,6 +162,37 @@ curl -X POST http://localhost:8080/v1/credits/deductions \
   -H 'idempotency-key: ai-request-0001' \
   -d '{"customerId":"CUSTOMER_UUID","amount":"25.00","reference":"request-0001","metadata":{"request_id":"request-0001"}}'
 ```
+
+## AI Reseller Pricing and Usage
+
+Admins configure provider names and model pricing through the `/v1/admin/ai` endpoints. Each model can charge per request, per 1,000 input/output tokens, or both. Provider cost and customer price are recorded separately; a customer price can be set explicitly per pricing component or derived from the configured markup basis points. Prices use USD with eight decimal places internally, while the customer's charge is converted using the existing `credits_per_usdc_rate` and deducted from the same credit account as other usage.
+
+This phase does not connect to AI providers or store provider API keys. Merchant backends report completed usage to `POST /v1/ai/usage`; the API calculates the charge from the active model configuration, atomically deducts credits, writes the existing credit ledger, stores provider cost/customer price/profit and emits `credit.deducted` plus `ai.usage.recorded`. Disabled providers or models are rejected. `requestId` is the idempotency key: repeating it with the same payload replays the original result, while changing the payload returns `409`.
+
+Treat usage reporting as a trusted server-to-server operation. Do not call it from a customer-controlled browser: reported token counts are supplied by the merchant and are not independently verified against a provider. `GET /v1/ai/models` exposes active model names and customer prices without provider costs; merchant usage history is scoped to the authenticated merchant. Provider secrets are neither accepted nor returned by these endpoints.
+
+Configure a provider and token-priced model:
+
+```sh
+curl -X POST http://localhost:8080/v1/admin/ai/providers \
+  -H 'content-type: application/json' -H "x-admin-api-key: $ADMIN_API_KEY" \
+  -d '{"slug":"example-ai","name":"Example AI"}'
+
+# Use the returned provider ID in the model path. A null/omitted customer rate derives from markupBps.
+curl -X POST http://localhost:8080/v1/admin/ai/providers/PROVIDER_UUID/models \
+  -H 'content-type: application/json' -H "x-admin-api-key: $ADMIN_API_KEY" \
+  -d '{"slug":"text-small","name":"Text Small","enabled":true,"pricingMode":"PER_1K_TOKENS","providerInputCostPer1kUsd":"0.01000000","providerOutputCostPer1kUsd":"0.02000000","markupBps":1000}'
+```
+
+Record usage using the merchant API key. The customer must have enough credits, topped up through the existing USDC flow or credited through the existing credit engine:
+
+```sh
+curl -X POST http://localhost:8080/v1/ai/usage \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -d '{"requestId":"ai-request-0001","customerId":"CUSTOMER_UUID","provider":"example-ai","model":"text-small","inputTokens":1200,"outputTokens":450,"metadata":{}}'
+```
+
+Admins can inspect configured costs and margins with `GET /v1/admin/ai/models` and `GET /v1/admin/ai/usage`; merchant-facing model and usage endpoints do not expose provider cost or markup.
 
 ## Architecture
 

@@ -49,6 +49,7 @@ export const webhookEventTypes = [
   'order.paid',
   'credit.topup',
   'credit.deducted',
+  'ai.usage.recorded',
 ] as const;
 export type WebhookEventType = typeof webhookEventTypes[number];
 
@@ -96,3 +97,45 @@ export const updateCreditSettingsSchema = z.object({
   minimumTopupUsdc: positiveDecimal,
   maximumTopupUsdc: positiveDecimal,
 });
+
+const aiSlug = z.string().trim().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/);
+const aiUsdRate = z.string().regex(/^(0|[1-9]\d{0,19})(\.\d{1,8})?$/);
+
+export const createAiProviderSchema = z.object({
+  slug: aiSlug,
+  name: z.string().trim().min(1).max(100),
+  enabled: z.boolean().default(true),
+}).strict();
+
+export const updateAiProviderSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  enabled: z.boolean().optional(),
+}).strict().refine((input) => Object.values(input).some((value) => value !== undefined), {
+  message: 'At least one provider field must be provided',
+});
+
+export const createAiModelSchema = z.object({
+  slug: aiSlug,
+  name: z.string().trim().min(1).max(120),
+  enabled: z.boolean().default(false),
+  pricingMode: z.enum(['PER_REQUEST', 'PER_1K_TOKENS', 'PER_REQUEST_AND_TOKENS']),
+  providerCostPerRequestUsd: aiUsdRate.default('0'),
+  customerPricePerRequestUsd: aiUsdRate.nullable().default(null),
+  providerInputCostPer1kUsd: aiUsdRate.default('0'),
+  customerInputPricePer1kUsd: aiUsdRate.nullable().default(null),
+  providerOutputCostPer1kUsd: aiUsdRate.default('0'),
+  customerOutputPricePer1kUsd: aiUsdRate.nullable().default(null),
+  markupBps: z.number().int().min(0).max(100_000).default(0),
+}).strict();
+
+export const updateAiModelSchema = createAiModelSchema;
+
+export const recordAiUsageSchema = z.object({
+  requestId: z.string().trim().min(8).max(128),
+  customerId: z.string().uuid(),
+  provider: aiSlug,
+  model: aiSlug,
+  inputTokens: z.number().int().min(0).max(1_000_000_000_000).default(0),
+  outputTokens: z.number().int().min(0).max(1_000_000_000_000).default(0),
+  metadata: z.record(z.unknown()).default({}),
+}).strict();
