@@ -2,6 +2,9 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import type { Database } from './db.js';
 import { HttpError } from './errors.js';
+import type { PaymentAdapter } from './payment-adapter.js';
+import { BaseUsdcAdapter } from './adapters/usdc/base-usdc-adapter.js';
+import { PaymentVerificationService } from './services/payment-verification-service.js';
 import { customerRoutes } from './modules/customers.js';
 import { apiKeyRoutes } from './modules/api-keys.js';
 import { ledgerRoutes } from './modules/ledger.js';
@@ -9,10 +12,17 @@ import { merchantRoutes } from './modules/merchants.js';
 import { orderRoutes } from './modules/orders.js';
 import { paymentRoutes } from './modules/payments.js';
 
-type AppOptions = { db: Database; migrate?: () => Promise<void> };
+type AppOptions = {
+  db: Database;
+  migrate?: () => Promise<void>;
+  paymentAdapter?: PaymentAdapter;
+  verification?: PaymentVerificationService;
+};
 
-export async function buildApp({ db, migrate }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ db, migrate, paymentAdapter, verification }: AppOptions): Promise<FastifyInstance> {
   if (migrate) await migrate();
+  const adapter = paymentAdapter ?? new BaseUsdcAdapter();
+  const paymentVerification = verification ?? new PaymentVerificationService(db, [adapter]);
   const app = Fastify({ logger: true, bodyLimit: 256 * 1024 });
   await app.register(sensible);
 
@@ -37,8 +47,8 @@ export async function buildApp({ db, migrate }: AppOptions): Promise<FastifyInst
   await app.register(merchantRoutes, { db });
   await app.register(apiKeyRoutes, { db });
   await app.register(customerRoutes, { db });
-  await app.register(orderRoutes, { db });
-  await app.register(paymentRoutes, { db });
+  await app.register(orderRoutes, { db, paymentAdapter: adapter });
+  await app.register(paymentRoutes, { db, verification: paymentVerification });
   await app.register(ledgerRoutes, { db });
   return app;
 }

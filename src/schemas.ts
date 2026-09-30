@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-export const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'Must be a valid EVM address');
+export const addressSchema = z.string()
+  .regex(/^0x[0-9a-fA-F]{40}$/, 'Must be a valid EVM address')
+  .refine((value) => value.toLowerCase() !== `0x${'0'.repeat(40)}`, 'Zero address cannot receive payments');
 export const createMerchantSchema = z.object({
   name: z.string().trim().min(1).max(120),
   email: z.string().trim().email().max(254),
@@ -31,4 +33,8 @@ export const createOrderSchema = z.object({
 }).refine((value) => !/^0(?:\.0+)?$/.test(value.amount), {
   message: 'amount must be greater than zero',
   path: ['amount'],
+});
+
+export const verifyPaymentSchema = z.object({
+  transactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Transaction hash must be a 32-byte EVM hash'),
 });

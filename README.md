@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1 status
+## Phase 1-2 status
 
-Implemented: project foundation, PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, payment and order lookup, and an append-only ledger. On-chain verification, checkout, links, QR, webhooks, credits, AI pricing and dashboard are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, payment and order lookup, append-only ledger, and the Base USDC adapter with transaction detection and server-side verification. Checkout, links, QR, webhooks, credits, AI pricing and dashboard are later phases.
 
 ## Run locally
 
@@ -61,22 +61,39 @@ Other merchant endpoints:
 
 - `GET /v1/orders/:orderId`
 - `GET /v1/payments/:paymentId`
+- `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
 - `GET /v1/customers/:customerId`
 - `GET /v1/ledger?limit=50`
 - `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
 
 Every merchant-owned read is scoped to the authenticated merchant. The ledger database trigger rejects updates and deletes.
 
+## USDC on Base
+
+Set `BASE_RPC_URL` to a trusted Base mainnet JSON-RPC endpoint (a self-operated node is supported). `USDC_TOKEN_ADDRESS` defaults to Circle's Base USDC contract, and `USDC_MIN_CONFIRMATIONS` defaults to 12. Merchant `walletAddress` is the direct payment recipient; Tariffia never holds or signs with merchant keys.
+
+The API's payment detector scans configured USDC `Transfer` logs. `POST /v1/payments/:paymentId/verify` accepts a transaction hash as a hint, not proof. The server independently checks its RPC chain ID, token contract and token decimals, successful receipt, exact recipient, exact six-decimal amount, payment creation time and confirmation depth. Only then does one database transaction set the payment `CONFIRMED`, set its order `PAID`, store the transaction hash and append `PAYMENT_CONFIRMED` to the ledger. The hash is unique per network and a repeated confirmation cannot create a second ledger entry.
+
+```sh
+curl -X POST http://localhost:8080/v1/payments/PAYMENT_ID/verify \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -d '{"transactionHash":"0xTRANSACTION_HASH"}'
+```
+
+The endpoint responds with `202` while the transfer is unmined or below the configured confirmation depth, and `200` once independently verified and recorded.
+
+An unmined or under-confirmed payment remains `PENDING`/`DETECTED` and is not recorded as paid. The detector resumes from its persisted block cursor after restarts. Invalid or mismatched transfers never update the order or ledger.
+
 ## Security and custody
 
 - The admin credential and API-key pepper are server-only environment secrets.
 - Merchant API keys are shown once and stored only as HMAC-SHA256 hashes.
 - Phase 1 does not hold or sign with customer or merchant private keys.
-- Phase 1 payment status is only `PENDING`; frontend claims cannot confirm a payment. Independent chain verification arrives in Phase 2.
+- The frontend never determines payment status. Only the configured chain adapter can confirm a payment after independent server-side verification.
 
 ## Architecture
 
-`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/modules/` keeps merchant, customer, order, payment, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
+`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; the detector is separate from HTTP routes. `src/modules/` keeps merchant, customer, order, payment, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
 
 ## Development checks
 
