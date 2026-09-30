@@ -1,5 +1,6 @@
 import { BaseUsdcAdapter, baseUsdcAdapterSettings } from '../adapters/usdc/base-usdc-adapter.js';
 import { lightningAdapterSettings, LightningAdapter } from '../adapters/lightning-adapter.js';
+import { createLightningProviderFromConfig } from '../adapters/lnd-rest-provider.js';
 import { config } from '../config.js';
 import { PaymentAdapterRegistry } from './registry.js';
 
@@ -10,7 +11,7 @@ export function createDefaultPaymentAdapterRegistry(): PaymentAdapterRegistry {
     settings: baseUsdcAdapterSettings(),
     isDefault: true,
   });
-  registry.register(new LightningAdapter(), {
+  registry.register(new LightningAdapter(createLightningProviderFromConfig()), {
     enabled: config.LIGHTNING_ADAPTER_ENABLED,
     settings: lightningAdapterSettings(),
   });

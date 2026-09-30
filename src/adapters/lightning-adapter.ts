@@ -173,8 +173,13 @@ export class LightningAdapter implements PaymentAdapter {
     if (!payment) return this.pendingReceipt(input);
     if (typeof payment.paymentHash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(payment.paymentHash) ||
         payment.paymentHash.toLowerCase() !== paymentHash || payment.network !== settings.network ||
-        !/^[0-9]+$/.test(payment.amountMsat)) {
+        !/^[0-9]+$/.test(payment.amountMsat) || !Number.isFinite(Date.parse(payment.expiresAt))) {
       throw new PaymentAdapterError('invalid_response', 'verify_transaction', 'Lightning provider returned a mismatched payment');
+    }
+    const storedExpiry = input.adapterData.expiresAt;
+    if (typeof storedExpiry !== 'string' || !Number.isFinite(Date.parse(storedExpiry)) ||
+        Math.abs(Date.parse(payment.expiresAt) - Date.parse(storedExpiry)) > 2000) {
+      throw new PaymentAdapterError('invalid_response', 'verify_transaction', 'Lightning provider returned a mismatched invoice expiry');
     }
     if (payment.state === 'expired' || payment.state === 'cancelled') {
       return { state: 'rejected', reason: 'Lightning invoice is no longer payable' };
@@ -183,9 +188,21 @@ export class LightningAdapter implements PaymentAdapter {
       throw new PaymentAdapterError('invalid_response', 'verify_transaction', 'Lightning provider returned an unknown payment status');
     }
     if (payment.amountMsat !== input.amountBaseUnits) {
+      return { state: 'rejected', reason: 'Lightning invoice amount does not match the payment' };
+    }
+    if (payment.state === 'pending') {
+      if (Date.now() >= Date.parse(payment.expiresAt)) {
+        return { state: 'rejected', reason: 'Lightning invoice has expired' };
+      }
+      return this.pendingReceipt(input);
+    }
+    const settledAt = payment.settledAt ? Date.parse(payment.settledAt) : Number.NaN;
+    if (!Number.isFinite(settledAt) || settledAt > Date.parse(payment.expiresAt)) {
+      return { state: 'rejected', reason: 'Lightning invoice settled after its expiry' };
+    }
+    if (payment.paidAmountMsat !== input.amountBaseUnits) {
       return { state: 'rejected', reason: 'Lightning settlement amount does not match the invoice' };
     }
-    if (payment.state === 'pending') return this.pendingReceipt(input);
     return {
       state: 'verified',
       receipt: {

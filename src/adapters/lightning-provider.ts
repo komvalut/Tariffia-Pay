@@ -23,11 +23,15 @@ export interface LightningInvoice {
 export interface LightningProviderPayment {
   paymentHash: string;
   amountMsat: string;
+  paidAmountMsat?: string;
   network: LightningBitcoinNetwork;
   state: LightningProviderPaymentState;
+  expiresAt: string;
+  settledAt?: string;
 }
 
 /** Boundary for a future LND/CLN/LDK-backed implementation. */
+/** Providers must make createInvoice idempotent for the supplied idempotencyKey. */
 export interface LightningProvider {
   createInvoice(input: LightningInvoiceRequest): Promise<LightningInvoice>;
   getPayment(paymentHash: string, network: LightningBitcoinNetwork): Promise<LightningProviderPayment | null>;

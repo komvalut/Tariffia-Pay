@@ -43,6 +43,7 @@ export class MockLightningProvider implements LightningProvider {
       amountMsat: input.amountMsat,
       network: input.network,
       state: 'pending',
+      expiresAt: input.expiresAt,
     });
     return invoice;
   }
@@ -59,9 +60,15 @@ export class MockLightningProvider implements LightningProvider {
 
   async shutdown(): Promise<void> {}
 
-  setState(paymentHash: string, state: LightningProviderPaymentState, amountMsat?: string): void {
+  setState(paymentHash: string, state: LightningProviderPaymentState, paidAmountMsat?: string, settledAt?: string): void {
     const current = this.payments.get(paymentHash);
     if (!current) throw new Error('Mock Lightning payment not found');
-    this.payments.set(paymentHash, { ...current, state, ...(amountMsat ? { amountMsat } : {}) });
+    this.payments.set(paymentHash, {
+      ...current,
+      state,
+      ...(state === 'settled'
+        ? { paidAmountMsat: paidAmountMsat ?? current.amountMsat, settledAt: settledAt ?? new Date().toISOString() }
+        : {}),
+    });
   }
 }

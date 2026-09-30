@@ -4,7 +4,7 @@ Self-hosted, non-custodial merchant payment infrastructure. The payment core own
 
 ## Phase 1-12 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, the formal payment-adapter contract and registry with Base USDC verification and a disabled Lightning invoice/provider foundation, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, the official TypeScript integration package, production security hardening, and self-hosted production deployment support. No Lightning node integration is configured; additional payment methods are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, the formal payment-adapter contract and registry with Base USDC verification and a disabled-by-default LND REST Lightning provider, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, the official TypeScript integration package, production security hardening, and self-hosted production deployment support. Configure a node only through server-side environment secrets; no live node connectivity was tested here. Additional payment methods are later phases.
 
 ## Run locally
 

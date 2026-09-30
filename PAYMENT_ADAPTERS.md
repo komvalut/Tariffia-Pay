@@ -32,9 +32,22 @@ Merchants may select an installed method on order/payment-link creation with the
 
 Base USDC remains the default and retains its Base RPC, six-decimal amount checks, exact token/recipient/amount verification, confirmation-depth checks, reverted-transfer handling, and automatic transfer scanner. Set `USDC_ADAPTER_ENABLED=false` to stop new Base USDC payment requests; re-enable it to accept new requests again. This does not disable verification/reading for existing payments.
 
-## Lightning Foundation
+## Lightning Provider
 
-Bitcoin Lightning is registered but disabled by default (`LIGHTNING_ADAPTER_ENABLED=false`). Its provider contract lives in `src/adapters/lightning-provider.ts`; invoice creation and payment status lookup are delegated to that interface. Payment amounts are whole SAT, `amountBaseUnits` is millisatoshis, the BOLT11 payment request is returned through the generic `recipientAddress` field, and the normalized transaction ID is the invoice payment hash. The current server composition intentionally supplies no Lightning provider, so enabling the flag alone does not enable payments: the adapter remains unavailable until a real provider is explicitly wired. No node connection, credential, private key, or production LND/CLN/LDK implementation is included. The in-memory provider exists only under `tests/`.
+Bitcoin Lightning is registered and disabled by default (`LIGHTNING_ADAPTER_ENABLED=false`). `src/adapters/lightning-provider.ts` defines the backend boundary; `src/adapters/lnd-rest-provider.ts` implements LND REST invoice creation and lookup. The default composition installs LND REST only when `LIGHTNING_PROVIDER_TYPE=lnd-rest`; no credentials or URLs are hard-coded. Core Lightning or another compatible backend can be added behind the same interface.
+
+For an LND REST node, configure these values only in the server environment or secret manager:
+
+- `LIGHTNING_ADAPTER_ENABLED=true`
+- `LIGHTNING_PROVIDER_TYPE=lnd-rest`
+- `LIGHTNING_PROVIDER_URL=https://<private-node-or-proxy>/`
+- `LIGHTNING_PROVIDER_MACAROON=<hex-encoded-restricted-invoice-and-info-macaroon>`
+- `LIGHTNING_PROVIDER_IDEMPOTENCY_SECRET=<independent-random-32-byte-hex-secret>`
+- `LIGHTNING_PROVIDER_TIMEOUT_MS=5000`
+
+Keep the idempotency secret stable across restarts; it derives a deterministic invoice preimage so a retry after a lost response looks up the existing invoice rather than creating another. Use a least-privilege macaroon with only the required invoice and node-info permissions. Production remote endpoints require HTTPS; credentials in provider URLs, query strings, and fragments are rejected. Local loopback HTTP is allowed for a node on the same host. Provider credentials are never included in adapter summaries, payment responses, or provider error messages. Keep `.env.production` mode `0600` and do not commit it.
+
+Payment amounts are whole SAT and `amountBaseUnits` is millisatoshis. The BOLT11 payment request is returned through the generic `recipientAddress` field; the normalized transaction ID is the invoice payment hash. LND `OPEN`/`ACCEPTED` maps to pending, `SETTLED` is verified only after matching invoice hash, invoice amount, paid amount and expiry, and `CANCELED` is rejected. No Lightning payout/send operation is implemented. The in-memory provider exists only under `tests/`.
 
 The adapter maps provider `pending` status to the common pending state and `settled` to verified only when the paid millisatoshi amount matches the invoice. Expired/cancelled invoices are rejected without confirming the payment. Provider exceptions are normalized and their messages are not returned to API clients.
 

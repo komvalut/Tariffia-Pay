@@ -18,6 +18,11 @@ const schema = z.object({
   LIGHTNING_MINIMUM_AMOUNT_SATS: z.coerce.number().int().min(1).default(1),
   LIGHTNING_MAXIMUM_AMOUNT_SATS: z.coerce.number().int().min(1).default(100_000_000),
   LIGHTNING_INVOICE_EXPIRY_SECONDS: z.coerce.number().int().min(60).max(604_800).default(3600),
+  LIGHTNING_PROVIDER_TYPE: z.enum(['none', 'lnd-rest']).default('none'),
+  LIGHTNING_PROVIDER_URL: z.string().default(''),
+  LIGHTNING_PROVIDER_MACAROON: z.string().default(''),
+  LIGHTNING_PROVIDER_IDEMPOTENCY_SECRET: z.string().default(''),
+  LIGHTNING_PROVIDER_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5000),
   PAYMENT_DETECTOR_INTERVAL_MS: z.coerce.number().int().min(1000).default(10_000),
   PAYMENT_SCAN_LOOKBACK_BLOCKS: z.coerce.number().int().min(1).max(10_000).default(100),
   PAYMENT_SCAN_BLOCK_RANGE: z.coerce.number().int().min(1).max(5_000).default(500),
@@ -83,6 +88,27 @@ export function validateProductionConfiguration(
   }
   if (new URL(values.BASE_RPC_URL).protocol !== 'https:') {
     throw new Error('BASE_RPC_URL must use HTTPS in production');
+  }
+  if (values.LIGHTNING_ADAPTER_ENABLED && values.LIGHTNING_PROVIDER_TYPE === 'none') {
+    throw new Error('An enabled Lightning adapter requires an explicitly configured provider');
+  }
+  if (values.LIGHTNING_PROVIDER_TYPE === 'lnd-rest') {
+    let lightningUrl: URL;
+    try {
+      lightningUrl = new URL(values.LIGHTNING_PROVIDER_URL);
+    } catch {
+      throw new Error('LIGHTNING_PROVIDER_URL must be a valid URL');
+    }
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(lightningUrl.hostname);
+    if (lightningUrl.username || lightningUrl.password || lightningUrl.search || lightningUrl.hash ||
+        (lightningUrl.protocol !== 'https:' && (lightningUrl.protocol !== 'http:' || (values.NODE_ENV === 'production' && !loopback)))) {
+      throw new Error('Lightning provider URL must use HTTPS and contain no credentials or query data');
+    }
+    if (!/^(?:[0-9a-fA-F]{2}){32,}$/.test(values.LIGHTNING_PROVIDER_MACAROON) ||
+        !/^[0-9a-fA-F]{64}$/.test(values.LIGHTNING_PROVIDER_IDEMPOTENCY_SECRET) ||
+        values.LIGHTNING_PROVIDER_MACAROON.toLowerCase() === values.LIGHTNING_PROVIDER_IDEMPOTENCY_SECRET.toLowerCase()) {
+      throw new Error('LND REST requires a hex macaroon and a distinct 32-byte invoice idempotency secret');
+    }
   }
   const trustProxy = values.TRUST_PROXY.trim().toLowerCase();
   const proxyRanges = trustProxy.split(',').map((item) => item.trim());

@@ -126,6 +126,12 @@ describe('Lightning payment adapter foundation', () => {
         currency: 'SAT', recipient: details.recipientAddress, confirmations: 1, blockNumber: null,
       },
     });
+    const expiryMs = Date.parse(String(details.adapterData.expiresAt));
+    provider.setState(paymentHash, 'settled', '25000', new Date(expiryMs + 1000).toISOString());
+    await expect(registry.verifyTransaction('lightning', normalizedInput)).resolves.toMatchObject({ state: 'rejected' });
+    provider.setState(paymentHash, 'settled', '24000');
+    await expect(registry.verifyTransaction('lightning', normalizedInput)).resolves.toMatchObject({ state: 'rejected' });
+    provider.setState(paymentHash, 'settled', '25000');
 
     await expect(registry.verifyTransaction('lightning', { ...normalizedInput, transactionId: 'f'.repeat(64) }))
       .resolves.toMatchObject({ state: 'rejected' });
