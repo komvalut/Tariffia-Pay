@@ -14,6 +14,9 @@ import type {
   PaymentVerificationResult,
 } from '../src/payment-adapter.js';
 import { PaymentAdapterRegistry } from '../src/payment-adapters/registry.js';
+import { LightningAdapter } from '../src/adapters/lightning-adapter.js';
+import type { LightningAdapterSettings } from '../src/adapters/lightning-adapter.js';
+import { MockLightningProvider } from './fixtures/mock-lightning-provider.js';
 import { PaymentVerificationService } from '../src/services/payment-verification-service.js';
 import { UsdcPaymentDetector } from '../src/services/usdc-payment-detector.js';
 import { WebhookDeliveryWorker } from '../src/services/webhook-delivery-worker.js';
@@ -289,6 +292,95 @@ describe('Tariffia merchant and payment API', () => {
     expect(adapters.statusCode).toBe(200);
     expect(adapters.json().adapters).toMatchObject([{ id: 'usdc', status: 'disabled' }]);
     expect(adapters.body).not.toContain('adapterData');
+  });
+
+  it('creates a Lightning invoice and confirms provider settlement through Payment Core, Ledger, and Webhooks', async () => {
+    const provider = new MockLightningProvider();
+    const registry = new PaymentAdapterRegistry();
+    registry.register(paymentAdapter, { enabled: true, settings: {}, isDefault: true });
+    const lightningSettings: LightningAdapterSettings = {
+      network: 'mainnet', minimumAmountSats: 1, maximumAmountSats: 100_000,
+      invoiceExpirySeconds: 3600,
+    };
+    registry.register(new LightningAdapter(provider), { enabled: true, settings: lightningSettings });
+    await registry.initialize();
+    await app.close();
+    app = await buildApp({ db, adapterRegistry: registry });
+
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Lightning Store', email: 'lightning-store@example.com', walletAddress: '0x3434343434343434343434343434343434343434' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const created = await app.inject({
+      method: 'POST', url: '/v1/orders',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'lightning-invoice-order-1' },
+      payload: { description: 'Lightning order', amount: '25', currency: 'SAT', adapter: 'lightning' },
+    });
+    expect(created.statusCode).toBe(201);
+    const payment = created.json().payment;
+    expect(payment).toMatchObject({
+      adapter: 'lightning', network: 'lightning-mainnet', currency: 'SAT',
+      amountBaseUnits: '25000', recipientAddress: expect.stringMatching(/^lnmock_mainnet_/),
+    });
+    expect(payment.adapterData).toBeUndefined();
+    const invoice = [...provider.invoicesCreated.values()][0]!;
+
+    const pending = await app.inject({
+      method: 'POST', url: `/v1/payments/${payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionId: invoice.paymentHash },
+    });
+    expect(pending.statusCode).toBe(202);
+    expect(pending.json().payment.status).toBe('PENDING');
+
+    provider.setState(invoice.paymentHash, 'settled');
+    const confirmed = await app.inject({
+      method: 'POST', url: `/v1/payments/${payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionId: invoice.paymentHash.toUpperCase() },
+    });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json().payment).toMatchObject({ status: 'CONFIRMED', transactionId: invoice.paymentHash });
+
+    const ledger = await app.inject({ method: 'GET', url: '/v1/ledger', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(ledger.json().entries.map((entry: { entryType: string }) => entry.entryType)).toEqual(expect.arrayContaining([
+      'PAYMENT_CONFIRMED', 'PAYMENT_DETECTED', 'PAYMENT_CREATED',
+    ]));
+    expect(ledger.json().entries).toHaveLength(3);
+    const webhookEvents = await db.query<{ event_type: string; payload: { data: { transactionId?: string } } }>(
+      'SELECT event_type, payload FROM webhook_events WHERE resource_id = $1 ORDER BY created_at ASC', [payment.id],
+    );
+    expect(webhookEvents.rows.map((event) => event.event_type)).toContain('payment.confirmed');
+    expect(webhookEvents.rows.find((event) => event.event_type === 'payment.confirmed')?.payload.data.transactionId)
+      .toBe(invoice.paymentHash);
+
+    await app.close();
+    const disabledRegistry = new PaymentAdapterRegistry();
+    disabledRegistry.register(paymentAdapter, { enabled: true, settings: {}, isDefault: true });
+    disabledRegistry.register(new LightningAdapter(provider), { enabled: false, settings: lightningSettings });
+    await disabledRegistry.initialize();
+    app = await buildApp({ db, adapterRegistry: disabledRegistry });
+    const existing = await app.inject({
+      method: 'GET', url: `/v1/payments/${payment.id}`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(existing.statusCode).toBe(200);
+    expect(existing.json().payment.status).toBe('CONFIRMED');
+
+    const rejected = await app.inject({
+      method: 'POST', url: '/v1/orders',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'lightning-disabled-order' },
+      payload: { description: 'Disabled Lightning order', amount: '25', currency: 'SAT', adapter: 'lightning' },
+    });
+    expect(rejected.statusCode).toBe(503);
+    expect(provider.createCalls).toHaveLength(1);
+    const adminAdapters = await app.inject({
+      method: 'GET', url: '/v1/admin/payment-adapters',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(adminAdapters.json().adapters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'lightning', status: 'disabled', capabilities: expect.objectContaining({ currencies: ['SAT'] }) }),
+    ]));
+    expect(adminAdapters.body).not.toContain('privateKey');
   });
 
   it('lists API key metadata without exposing hashes and supports revocation', async () => {

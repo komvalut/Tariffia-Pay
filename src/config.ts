@@ -13,6 +13,11 @@ const schema = z.object({
   USDC_TOKEN_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/)
     .default('0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913'),
   USDC_MIN_CONFIRMATIONS: z.coerce.number().int().min(1).default(12),
+  LIGHTNING_ADAPTER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  LIGHTNING_NETWORK: z.enum(['mainnet', 'testnet', 'signet']).default('mainnet'),
+  LIGHTNING_MINIMUM_AMOUNT_SATS: z.coerce.number().int().min(1).default(1),
+  LIGHTNING_MAXIMUM_AMOUNT_SATS: z.coerce.number().int().min(1).default(100_000_000),
+  LIGHTNING_INVOICE_EXPIRY_SECONDS: z.coerce.number().int().min(60).max(604_800).default(3600),
   PAYMENT_DETECTOR_INTERVAL_MS: z.coerce.number().int().min(1000).default(10_000),
   PAYMENT_SCAN_LOOKBACK_BLOCKS: z.coerce.number().int().min(1).max(10_000).default(100),
   PAYMENT_SCAN_BLOCK_RANGE: z.coerce.number().int().min(1).max(5_000).default(500),

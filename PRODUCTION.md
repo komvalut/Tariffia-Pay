@@ -15,6 +15,8 @@ Copy `.env.production.example` to `.env.production`. Generate independent secret
 
 Set `PUBLIC_BASE_URL` to the externally reachable HTTPS origin, with no path, query string, or credentials. Keep `BIND_ADDRESS=127.0.0.1` when the TLS reverse proxy runs on the Docker host. If a proxy runs in another container, bind only to a private interface, limit access with firewall/network policy, and set `TRUST_PROXY` to that proxy's exact IP or constrained CIDR list. Do not set blanket `TRUST_PROXY=true`.
 
+Lightning is registered but disabled by default. No Lightning node/provider is configured in this release; leave `LIGHTNING_ADAPTER_ENABLED=false`. Setting it to true without wiring a provider still leaves invoice creation unavailable.
+
 The Compose database URL uses `POSTGRES_PASSWORD` and the internal `db` service name. Use URL-safe hex for that password. `DATABASE_URL` in the production environment file is for running the Node process directly on the host; Compose overrides it for container networking.
 
 ```sh

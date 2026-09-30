@@ -42,6 +42,7 @@ export interface PaymentRequest {
   amount: string;
   currency: string;
   recipient: string;
+  description?: string;
   expiresAt: string | null;
 }
 

@@ -30,6 +30,12 @@ Merchants may select an installed method on order/payment-link creation with the
 
 ## Base USDC
 
-Base USDC is the only installed adapter. It remains the default and retains its Base RPC, six-decimal amount checks, exact token/recipient/amount verification, confirmation-depth checks, reverted-transfer handling, and automatic transfer scanner. Set `USDC_ADAPTER_ENABLED=false` to stop new Base USDC payment requests; re-enable it to accept new requests again. This does not add another payment method or disable verification/reading for existing payments.
+Base USDC remains the default and retains its Base RPC, six-decimal amount checks, exact token/recipient/amount verification, confirmation-depth checks, reverted-transfer handling, and automatic transfer scanner. Set `USDC_ADAPTER_ENABLED=false` to stop new Base USDC payment requests; re-enable it to accept new requests again. This does not disable verification/reading for existing payments.
+
+## Lightning Foundation
+
+Bitcoin Lightning is registered but disabled by default (`LIGHTNING_ADAPTER_ENABLED=false`). Its provider contract lives in `src/adapters/lightning-provider.ts`; invoice creation and payment status lookup are delegated to that interface. Payment amounts are whole SAT, `amountBaseUnits` is millisatoshis, the BOLT11 payment request is returned through the generic `recipientAddress` field, and the normalized transaction ID is the invoice payment hash. The current server composition intentionally supplies no Lightning provider, so enabling the flag alone does not enable payments: the adapter remains unavailable until a real provider is explicitly wired. No node connection, credential, private key, or production LND/CLN/LDK implementation is included. The in-memory provider exists only under `tests/`.
+
+The adapter maps provider `pending` status to the common pending state and `settled` to verified only when the paid millisatoshi amount matches the invoice. Expired/cancelled invoices are rejected without confirming the payment. Provider exceptions are normalized and their messages are not returned to API clients.
 
 The admin endpoint is `GET /v1/admin/payment-adapters`. It requires the existing admin API key.

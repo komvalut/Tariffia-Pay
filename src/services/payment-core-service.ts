@@ -55,6 +55,7 @@ export class PaymentCoreService {
             amount: input.body.amount,
             currency: input.body.currency,
             recipient: input.merchant.wallet_address,
+            description: input.body.description,
             expiresAt: expiresAt.toISOString(),
           });
         } catch (error) {
