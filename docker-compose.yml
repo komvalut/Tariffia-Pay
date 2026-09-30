@@ -24,9 +24,11 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 8080
       DATABASE_URL: postgres://tariffia:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/tariffia
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-300}
       ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}
       API_KEY_PEPPER: ${API_KEY_PEPPER:?Set API_KEY_PEPPER in .env}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in .env (HTTPS is required in production)}
       BASE_RPC_URL: ${BASE_RPC_URL:-https://mainnet.base.org}
       USDC_TOKEN_ADDRESS: ${USDC_TOKEN_ADDRESS:-0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913}
       USDC_MIN_CONFIRMATIONS: ${USDC_MIN_CONFIRMATIONS:-12}

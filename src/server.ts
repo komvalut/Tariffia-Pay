@@ -7,13 +7,14 @@ import { PaymentVerificationService } from './services/payment-verification-serv
 import { UsdcPaymentDetector } from './services/usdc-payment-detector.js';
 import { WebhookDeliveryWorker } from './services/webhook-delivery-worker.js';
 import { CreditEngine } from './services/credit-engine.js';
+import { safeErrorMetadata } from './safe-logging.js';
 
 const db = new PostgresDatabase();
 const paymentAdapter = new BaseUsdcAdapter();
 const verification = new PaymentVerificationService(db, [paymentAdapter]);
 const detector = new UsdcPaymentDetector(db, paymentAdapter, verification);
 const credits = new CreditEngine(db);
-const webhookWorker = new WebhookDeliveryWorker(db, fetch, [credits]);
+const webhookWorker = new WebhookDeliveryWorker(db, fetch, [credits], { pinDns: config.NODE_ENV === 'production' });
 const app = await buildApp({ db, migrate: () => db.migrate(), paymentAdapter, verification, creditEngine: credits });
 let detectorTimer: NodeJS.Timeout | undefined;
 let webhookTimer: NodeJS.Timeout | undefined;
@@ -31,16 +32,16 @@ process.once('SIGTERM', shutdown);
 
 try {
   await app.listen({ host: '0.0.0.0', port: config.PORT });
-  const runDetector = () => detector.pollOnce().catch((error) => app.log.error({ error }, 'USDC payment detection failed'));
+  const runDetector = () => detector.pollOnce().catch((error) => app.log.error(safeErrorMetadata(error), 'USDC payment detection failed'));
   void runDetector();
   detectorTimer = setInterval(runDetector, config.PAYMENT_DETECTOR_INTERVAL_MS);
   detectorTimer.unref();
-  const runWebhooks = () => webhookWorker.runOnce().catch((error) => app.log.error({ error }, 'Webhook worker failed'));
+  const runWebhooks = () => webhookWorker.runOnce().catch((error) => app.log.error(safeErrorMetadata(error), 'Webhook worker failed'));
   void runWebhooks();
   webhookTimer = setInterval(runWebhooks, config.WEBHOOK_WORKER_INTERVAL_MS);
   webhookTimer.unref();
 } catch (error) {
-  app.log.error(error);
+  app.log.error(safeErrorMetadata(error), 'Server startup failed');
   await db.close();
   process.exit(1);
 }

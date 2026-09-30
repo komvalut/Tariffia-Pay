@@ -592,7 +592,7 @@ describe('Tariffia merchant and payment API', () => {
       method: 'POST', url: '/v1/webhooks',
       headers: { authorization: `Bearer ${apiKey}` },
       payload: {
-        name: 'Test receiver', url: 'http://127.0.0.1:4556/events',
+        name: 'Test receiver', url: 'http://127.0.0.1:4556/events?token=delivery-url-secret',
         events: ['payment.created', 'payment.confirmed', 'order.paid'], secret,
       },
     });
@@ -639,6 +639,8 @@ describe('Tariffia merchant and payment API', () => {
     expect(adminRetryLog.statusCode).toBe(200);
     expect(adminRetryLog.json().deliveries[0].lastHttpStatus).toBe(503);
     expect(adminRetryLog.json().deliveries[0].lastError).toContain('HTTP 503');
+    expect(adminRetryLog.json().deliveries[0].url).toBe('http://127.0.0.1:4556');
+    expect(adminRetryLog.body).not.toContain('delivery-url-secret');
     await db.query('UPDATE webhook_deliveries SET next_attempt_at = now() WHERE id = $1', [firstDelivery.id]);
 
     verificationResult = { state: 'verified', confirmations: 12, blockNumber: 765432n };
@@ -675,6 +677,7 @@ describe('Tariffia merchant and payment API', () => {
     expect(adminLog.statusCode).toBe(200);
     expect(adminLog.json().deliveries).toHaveLength(3);
     expect(adminLog.body).not.toContain(secret);
+    expect(adminLog.body).not.toContain('delivery-url-secret');
   });
 
   it('emits detected, failed, and expired payment webhooks from ledger-backed transitions', async () => {
@@ -1146,6 +1149,55 @@ describe('Tariffia merchant and payment API', () => {
       expect(response.statusCode, `merchant ${collection}: ${response.body}`).toBe(200);
     }
   });
+
+  it('adds security headers and applies the configured global API rate limit', async () => {
+    const health = await app.inject({ method: 'GET', url: '/health' });
+    expect(health.headers['x-content-type-options']).toBe('nosniff');
+    expect(health.headers['x-frame-options']).toBe('DENY');
+    expect(health.headers['referrer-policy']).toBe('no-referrer');
+    expect(health.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    const crossOriginHealth = await app.inject({
+      method: 'GET', url: '/health', headers: { origin: 'https://untrusted.example' },
+    });
+    expect(crossOriginHealth.headers['access-control-allow-origin']).toBeUndefined();
+    const malformedJson = await app.inject({
+      method: 'POST', url: '/v1/orders', headers: { 'content-type': 'application/json' }, payload: '{',
+    });
+    expect(malformedJson.statusCode).toBe(400);
+    expect(malformedJson.json().error).toBe('bad_request');
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Rate Limit Test', email: 'rate-limit-test@example.com', walletAddress: '0x1234567890123456789012345678901234567890' },
+    });
+    const unsupportedMedia = await app.inject({
+      method: 'POST', url: '/v1/orders',
+      headers: { authorization: `Bearer ${merchant.json().apiKey}`, 'content-type': 'application/x-unknown' },
+      payload: 'unsupported body',
+    });
+    expect(unsupportedMedia.statusCode).toBe(415);
+    expect(unsupportedMedia.json().error).toBe('bad_request');
+    const oversized = await app.inject({
+      method: 'POST', url: '/v1/orders', headers: { 'content-type': 'application/json' },
+      payload: ' '.repeat(256 * 1024 + 1),
+    });
+    expect(oversized.statusCode).toBe(413);
+    expect(oversized.json().error).toBe('payload_too_large');
+
+    let rateLimited = false;
+    for (let request = 0; request < 305; request++) {
+      const response = await app.inject({
+        method: 'GET', url: '/health',
+        headers: { 'x-forwarded-for': '198.51.100.1' },
+      });
+      expect(response.statusCode).toBeLessThan(500);
+      if (response.statusCode === 429) {
+        rateLimited = true;
+        break;
+      }
+    }
+    expect(rateLimited).toBe(true);
+  }, 15_000);
 
   function verificationServiceForTest(): PaymentVerificationService {
     return new PaymentVerificationService(db, [paymentAdapter]);

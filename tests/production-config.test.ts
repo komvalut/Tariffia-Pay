@@ -1,0 +1,65 @@
+import { describe, expect, it } from 'vitest';
+import { config, validateProductionConfiguration } from '../src/config.js';
+
+const productionValues = {
+  ...config,
+  NODE_ENV: 'production' as const,
+  DATABASE_URL: 'postgres://tariffia:long-production-database-password-123@db.example:5432/tariffia',
+  ADMIN_API_KEY: 'admin-secret-with-at-least-thirty-two-characters',
+  API_KEY_PEPPER: 'different-pepper-with-at-least-thirty-two-chars',
+  PUBLIC_BASE_URL: 'https://pay.example.com',
+  WEBHOOK_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+};
+
+const productionEnvironment = {
+  DATABASE_URL: productionValues.DATABASE_URL,
+  ADMIN_API_KEY: productionValues.ADMIN_API_KEY,
+  API_KEY_PEPPER: productionValues.API_KEY_PEPPER,
+  PUBLIC_BASE_URL: productionValues.PUBLIC_BASE_URL,
+  WEBHOOK_ENCRYPTION_KEY: productionValues.WEBHOOK_ENCRYPTION_KEY,
+};
+
+describe('production security configuration', () => {
+  it('accepts explicit HTTPS and distinct production secrets', () => {
+    expect(() => validateProductionConfiguration(productionValues, productionEnvironment)).not.toThrow();
+  });
+
+  it('rejects implicit default and placeholder database and secret configuration', () => {
+    const { DATABASE_URL: _databaseUrl, ...missingDatabaseUrl } = productionEnvironment;
+    expect(() => validateProductionConfiguration(productionValues, missingDatabaseUrl)).toThrow(/DATABASE_URL/);
+    expect(() => validateProductionConfiguration({ ...productionValues, DATABASE_URL: 'postgres://tariffia:replace-with-a-long-random-database-password@db.example/tariffia' }, productionEnvironment))
+      .toThrow(/development or placeholder/);
+    expect(() => validateProductionConfiguration({ ...productionValues, DATABASE_URL: 'postgres://tariffia:tariffia@localhost:5432/tariffia' }, productionEnvironment))
+      .toThrow(/development or placeholder/);
+    const { WEBHOOK_ENCRYPTION_KEY: _encryptionKey, ...missingEncryptionKey } = productionEnvironment;
+    expect(() => validateProductionConfiguration(productionValues, missingEncryptionKey)).toThrow(/WEBHOOK_ENCRYPTION_KEY/);
+  });
+
+  it('rejects HTTP public/RPC origins, short/reused secrets, and blanket proxy trust', () => {
+    expect(() => validateProductionConfiguration({ ...productionValues, PUBLIC_BASE_URL: 'http://pay.example.com' }, productionEnvironment))
+      .toThrow(/HTTPS origin/);
+    expect(() => validateProductionConfiguration({ ...productionValues, PUBLIC_BASE_URL: 'https://merchant:secret@pay.example.com' }, productionEnvironment))
+      .toThrow(/credentials/);
+    expect(() => validateProductionConfiguration({ ...productionValues, BASE_RPC_URL: 'http://rpc.example.com' }, productionEnvironment))
+      .toThrow(/BASE_RPC_URL.*HTTPS/);
+    expect(() => validateProductionConfiguration({ ...productionValues, ADMIN_API_KEY: 'short-secret' }, productionEnvironment))
+      .toThrow(/32 characters/);
+    expect(() => validateProductionConfiguration({ ...productionValues, API_KEY_PEPPER: productionValues.ADMIN_API_KEY }, productionEnvironment))
+      .toThrow(/secrets must not be reused/);
+    expect(() => validateProductionConfiguration({ ...productionValues, TRUST_PROXY: 'true' }, productionEnvironment))
+      .toThrow(/TRUST_PROXY.*trust every forwarded address/);
+    expect(() => validateProductionConfiguration({ ...productionValues, TRUST_PROXY: '0.0.0.0/0' }, productionEnvironment))
+      .toThrow(/trust every forwarded address/);
+  });
+
+  it('rejects reusing a database password as an application secret', () => {
+    const reused = 'same-secret-value-that-is-longer-than-32-characters';
+    const values = {
+      ...productionValues,
+      DATABASE_URL: `postgres://tariffia:${reused}@db.example:5432/tariffia`,
+      ADMIN_API_KEY: reused,
+    };
+    const environment = { ...productionEnvironment, DATABASE_URL: values.DATABASE_URL, ADMIN_API_KEY: reused };
+    expect(() => validateProductionConfiguration(values, environment)).toThrow(/must not be reused/);
+  });
+});

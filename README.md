@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-8 status
+## Phase 1-9 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, and the official TypeScript integration package. Subscriptions and other payment methods are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, the official TypeScript integration package, and production security hardening. Subscriptions and other payment methods are later phases.
 
 ## Run locally
 
@@ -87,6 +87,8 @@ The response contains `checkoutUrl` and `qrUrl`. The QR encodes that same `check
 
 Every merchant-owned read is scoped to the authenticated merchant. The ledger database trigger rejects updates and deletes.
 
+Production startup requires explicit database, admin, API-key pepper, public URL, and webhook encryption configuration. Admin and pepper secrets must be distinct random values of at least 32 characters; `PUBLIC_BASE_URL` and `BASE_RPC_URL` must use HTTPS. Configure `TRUST_PROXY` only with the IPs/CIDRs of trusted reverse proxies; forwarded client addresses are not trusted by default. API requests are rate-limited per client address, and responses include basic content-type, framing, referrer, permissions, and CSP protections. Production webhook delivery pins the validated DNS answer to the outbound connection to prevent DNS-rebinding SSRF.
+
 ## USDC on Base
 
 Set `BASE_RPC_URL` to a trusted Base mainnet JSON-RPC endpoint (a self-operated node is supported). `USDC_TOKEN_ADDRESS` defaults to Circle's Base USDC contract, and `USDC_MIN_CONFIRMATIONS` defaults to 12. Merchant `walletAddress` is the direct payment recipient; Tariffia never holds or signs with merchant keys.
@@ -127,7 +129,7 @@ curl -X POST http://localhost:8080/v1/webhooks \
   -d '{"name":"Store events","url":"https://merchant.example/webhooks/tariffia","events":["payment.confirmed","order.paid"],"secret":"REPLACE_WITH_A_LONG_RANDOM_SECRET"}'
 ```
 
-Webhook secrets are AES-256-GCM encrypted at rest using `WEBHOOK_ENCRYPTION_KEY`; create, update, list and admin log responses never return either the secret or its encrypted value. The encryption key must be stable across restarts and deployments; back it up securely and use a unique 32-byte random key (64 hex characters) in production. Rotate an endpoint's HMAC secret through `PATCH /v1/webhooks/:endpointId` by sending a new `secret`; Tariffia will not echo it.
+Webhook secrets are AES-256-GCM encrypted at rest using `WEBHOOK_ENCRYPTION_KEY`; create, update, list and admin log responses never return either the secret or its encrypted value. The encryption key must be stable across restarts and deployments; back it up securely and use a unique 32-byte random key (64 hex characters) in production. Rotate an endpoint's HMAC secret through `PATCH /v1/webhooks/:endpointId` by sending a new `secret`; Tariffia will not echo it. Endpoint URLs are existing plaintext configuration; do not embed API credentials in URL paths or query strings, and use the HMAC signing secret instead.
 
 Each JSON event has a unique UUID `id`, `type`, `createdAt` and `data`. Deliveries include `X-Tariffia-Event-Id`, `X-Tariffia-Timestamp` and `X-Tariffia-Signature: t=<unix-seconds>,v1=<hex-hmac-sha256>`. The signature is HMAC-SHA256 over `<timestamp>.<exact raw request body>`. Receivers should verify the signature with a bounded timestamp tolerance and deduplicate by event ID. The helper in `src/webhooks/signature.ts` implements verification.
 
@@ -142,6 +144,12 @@ Endpoint management and logs are available at `GET/POST /v1/webhooks`, `PATCH/DE
 - Tariffia does not hold or sign with customer or merchant private keys.
 - USDC payments and internal `CREDITS` balances use different records and currency labels; credits cannot be withdrawn or cashed out.
 - The frontend never determines payment status. Only the configured chain adapter can confirm a payment after independent server-side verification.
+
+## Production Hardening
+
+Production startup now requires explicit PostgreSQL, admin key, API-key pepper, public origin and webhook-encryption settings. Admin and pepper keys must be distinct, non-placeholder secrets of at least 32 characters; database, admin, pepper and encryption secrets cannot be reused. The public origin and Base RPC URL must use HTTPS. `TRUST_PROXY` defaults to `false`; behind a reverse proxy, set it only to constrained trusted proxy IPs/CIDRs. Blanket or wildcard proxy trust is rejected in production.
+
+API requests have a configurable per-client-address limit (`API_RATE_LIMIT_PER_MINUTE`, default 300). Responses include content-type, clickjacking, referrer, permissions and CSP protections, plus HSTS in production. CORS remains disabled so credential-bearing APIs are same-origin by default. Production webhook delivery re-resolves and validates the destination immediately before sending, then pins the validated public address for the HTTP/TLS connection to prevent DNS-rebinding SSRF. Admin webhook logs return only endpoint origins; transport errors are normalized so URL query credentials are not persisted or returned. API logs redact credential headers and omit arbitrary error messages/stacks. The API maps rate-limit, malformed-body and oversized-body errors to bounded 429/400/413 responses instead of internal errors. The unused CORS dependency was removed.
 
 ## Credit Engine
 

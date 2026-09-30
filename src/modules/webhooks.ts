@@ -6,6 +6,7 @@ import { createWebhookSchema, updateWebhookSchema } from '../schemas.js';
 import { newId } from '../security.js';
 import { encryptWebhookSecret } from '../webhooks/secret-crypto.js';
 import { validateWebhookUrl } from '../webhooks/url.js';
+import { sanitizeStoredWebhookError } from '../webhooks/error-safety.js';
 
 function pageLimit(value: string | undefined): number {
   return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
@@ -114,7 +115,14 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database }> = async (app, {
         ORDER BY d.created_at DESC, d.id DESC LIMIT $4`,
       [endpointId, merchant.id, query.before ?? null, pageLimit(query.limit)],
     );
-    return reply.send({ deliveries: result.rows });
+    return reply.send({ deliveries: result.rows.map((row) => {
+      const { lastError, ...delivery } = row as Record<string, unknown>;
+      return {
+        ...delivery,
+        lastError: sanitizeStoredWebhookError(typeof lastError === 'string' ? lastError : null,
+          typeof delivery.lastHttpStatus === 'number' ? delivery.lastHttpStatus : null),
+      };
+    }) });
   });
 
   app.get('/v1/webhooks/:endpointId/deliveries/:deliveryId/attempts', async (request, reply) => {
@@ -129,6 +137,10 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database }> = async (app, {
         ORDER BY a.attempt_number ASC`,
       [endpointId, merchant.id, deliveryId],
     );
-    return reply.send({ attempts: result.rows });
+    return reply.send({ attempts: result.rows.map((row) => {
+      const { error, ...attempt } = row as Record<string, unknown>;
+      return { ...attempt, error: sanitizeStoredWebhookError(typeof error === 'string' ? error : null,
+        typeof attempt.httpStatus === 'number' ? attempt.httpStatus : null) };
+    }) });
   });
 };

@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { requireAdmin, requireMerchant } from '../http.js';
+import { sanitizeStoredWebhookError } from '../webhooks/error-safety.js';
 
 type DashboardQuery = { q?: string; status?: string; page?: string; limit?: string };
 type Collection = {
@@ -260,6 +261,13 @@ export const dashboardRoutes: FastifyPluginAsync<{ db: Database }> = async (app,
         return { ...endpoint, origin: new URL(String(url)).origin };
       }) });
     }
+    if (collection === 'webhook-deliveries') {
+      return reply.send({ ...result, items: result.items.map((item) => {
+        const { lastError, ...delivery } = item as Record<string, unknown>;
+        return { ...delivery, lastError: sanitizeStoredWebhookError(typeof lastError === 'string' ? lastError : null,
+          typeof delivery.lastHttpStatus === 'number' ? delivery.lastHttpStatus : null) };
+      }) });
+    }
     return reply.send(result);
   });
 
@@ -293,6 +301,13 @@ export const dashboardRoutes: FastifyPluginAsync<{ db: Database }> = async (app,
       return reply.send({ ...result, items: result.items.map((item) => {
         const endpoint = item as Record<string, unknown>;
         return { ...endpoint, url: new URL(String(endpoint.url)).origin };
+      }) });
+    }
+    if (collection === 'webhook-deliveries') {
+      return reply.send({ ...result, items: result.items.map((item) => {
+        const { lastError, ...delivery } = item as Record<string, unknown>;
+        return { ...delivery, lastError: sanitizeStoredWebhookError(typeof lastError === 'string' ? lastError : null,
+          typeof delivery.lastHttpStatus === 'number' ? delivery.lastHttpStatus : null) };
       }) });
     }
     return reply.send(result);

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { requireAdmin } from '../http.js';
+import { sanitizeStoredWebhookError } from '../webhooks/error-safety.js';
 
 function pageLimit(value: string | undefined): number {
   return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
@@ -23,7 +24,15 @@ export const adminWebhookRoutes: FastifyPluginAsync<{ db: Database }> = async (a
         ORDER BY d.created_at DESC LIMIT $2`,
       [query.status ?? null, pageLimit(query.limit)],
     );
-    return reply.send({ deliveries: result.rows });
+    return reply.send({ deliveries: result.rows.map((row) => {
+      const { url, lastError, ...delivery } = row as Record<string, unknown>;
+      return {
+        ...delivery,
+        url: new URL(String(url)).origin,
+        lastError: sanitizeStoredWebhookError(typeof lastError === 'string' ? lastError : null,
+          typeof delivery.lastHttpStatus === 'number' ? delivery.lastHttpStatus : null),
+      };
+    }) });
   });
 
   app.get('/v1/admin/webhook-deliveries/:deliveryId/attempts', async (request, reply) => {
@@ -35,6 +44,10 @@ export const adminWebhookRoutes: FastifyPluginAsync<{ db: Database }> = async (a
          FROM webhook_delivery_attempts a WHERE a.delivery_id = $1 ORDER BY a.attempt_number ASC`,
       [deliveryId],
     );
-    return reply.send({ attempts: result.rows });
+    return reply.send({ attempts: result.rows.map((row) => {
+      const { error, ...attempt } = row as Record<string, unknown>;
+      return { ...attempt, error: sanitizeStoredWebhookError(typeof error === 'string' ? error : null,
+        typeof attempt.httpStatus === 'number' ? attempt.httpStatus : null) };
+    }) });
   });
 };

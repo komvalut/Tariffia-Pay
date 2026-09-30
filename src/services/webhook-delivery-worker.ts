@@ -4,7 +4,9 @@ import { newId } from '../security.js';
 import { enqueueWebhookEvent } from '../webhooks/outbox.js';
 import { decryptWebhookSecret } from '../webhooks/secret-crypto.js';
 import { createWebhookSignature } from '../webhooks/signature.js';
-import { validateWebhookUrl } from '../webhooks/url.js';
+import { safeWebhookTransportError } from '../webhooks/error-safety.js';
+import { resolveWebhookTarget } from '../webhooks/url.js';
+import { sendWebhookPinned, type PinnedWebhookRequest, type PinnedWebhookResponse } from '../webhooks/pinned-request.js';
 import type { PaymentLifecycleData, PaymentLifecycleHandler } from './payment-lifecycle.js';
 
 type DueDelivery = {
@@ -21,6 +23,11 @@ type DueDelivery = {
 
 type DeliveryJob = DueDelivery & { attemptId: string; attemptNumber: number; requestTimestamp: number };
 type Fetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
+export type WebhookWorkerSecurityOptions = {
+  pinDns?: boolean;
+  resolveTarget?: typeof resolveWebhookTarget;
+  pinnedSender?: (target: Awaited<ReturnType<typeof resolveWebhookTarget>>, input: PinnedWebhookRequest) => Promise<PinnedWebhookResponse>;
+};
 
 export class WebhookDeliveryWorker {
   private running = false;
@@ -29,6 +36,7 @@ export class WebhookDeliveryWorker {
     private readonly db: Database,
     private readonly fetcher: Fetcher = fetch,
     private readonly lifecycleHandlers: PaymentLifecycleHandler[] = [],
+    private readonly security: WebhookWorkerSecurityOptions = {},
   ) {}
 
   async runOnce(): Promise<{ duePayments: number; expiredPayments: number; claimedDeliveries: number }> {
@@ -158,7 +166,7 @@ export class WebhookDeliveryWorker {
     let httpStatus: number | null = null;
     let error: string | null = null;
     try {
-      const url = await validateWebhookUrl(job.url);
+      const target = await (this.security.resolveTarget ?? resolveWebhookTarget)(job.url);
       const secret = decryptWebhookSecret({
         ciphertext: job.secret_ciphertext,
         nonce: job.secret_nonce,
@@ -166,24 +174,24 @@ export class WebhookDeliveryWorker {
       });
       const body = JSON.stringify(job.payload);
       const signature = createWebhookSignature(secret, body, job.requestTimestamp);
-      const response = await this.fetcher(url, {
-        method: 'POST',
-        redirect: 'manual',
-        signal: AbortSignal.timeout(config.WEBHOOK_REQUEST_TIMEOUT_MS),
-        headers: {
-          'content-type': 'application/json',
-          'user-agent': 'Tariffia-Webhooks/1.0',
-          'x-tariffia-event-id': job.event_id,
-          'x-tariffia-timestamp': String(signature.timestamp),
-          'x-tariffia-signature': signature.header,
-        },
-        body,
-      });
+      const headers = {
+        'content-type': 'application/json',
+        'user-agent': 'Tariffia-Webhooks/1.0',
+        'x-tariffia-event-id': job.event_id,
+        'x-tariffia-timestamp': String(signature.timestamp),
+        'x-tariffia-signature': signature.header,
+      };
+      const signal = AbortSignal.timeout(config.WEBHOOK_REQUEST_TIMEOUT_MS);
+      const response = this.security.pinDns
+        ? await (this.security.pinnedSender ?? sendWebhookPinned)(target, {
+            headers, body, timeoutMs: config.WEBHOOK_REQUEST_TIMEOUT_MS, signal,
+          })
+        : await this.fetcher(target.url, { method: 'POST', redirect: 'manual', signal, headers, body });
       httpStatus = response.status;
       if (!response.ok) error = `Webhook receiver returned HTTP ${response.status}`;
-      await response.body?.cancel();
+      if ('body' in response) await response.body?.cancel();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message.slice(0, 1000) : 'Webhook delivery failed';
+      error = safeWebhookTransportError(caught);
     }
 
     const succeeded = httpStatus !== null && httpStatus >= 200 && httpStatus < 300 && error === null;
