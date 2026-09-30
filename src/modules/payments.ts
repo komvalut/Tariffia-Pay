@@ -1,8 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { requireMerchant } from '../http.js';
-import { parseBody } from '../http.js';
+import { parseBody, requireMerchant } from '../http.js';
 import { verifyPaymentSchema } from '../schemas.js';
 import type { PaymentVerificationService } from '../services/payment-verification-service.js';
 

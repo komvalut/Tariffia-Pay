@@ -34,6 +34,7 @@ export const createOrderSchema = z.object({
   message: 'amount must be greater than zero',
   path: ['amount'],
 });
+export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 
 export const verifyPaymentSchema = z.object({
   transactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Transaction hash must be a 32-byte EVM hash'),

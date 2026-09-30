@@ -10,6 +10,7 @@ import { parseUnits } from 'viem';
 import type { AdapterPaymentDetails, PaymentAdapter, PaymentVerificationResult } from '../src/payment-adapter.js';
 import { PaymentVerificationService } from '../src/services/payment-verification-service.js';
 import { UsdcPaymentDetector } from '../src/services/usdc-payment-detector.js';
+import { checkoutUrlForPayment } from '../src/checkout-links.js';
 
 const usdcAddress = '0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913';
 
@@ -121,6 +122,8 @@ describe('Tariffia merchant and payment API', () => {
     expect(Number(created.order.amount)).toBe(4.5);
     expect(created.order.status).toBe('PENDING');
     expect(created.payment.status).toBe('PENDING');
+    expect(created.checkoutUrl).toBe(checkoutUrlForPayment(created.payment.id));
+    expect(created.qrUrl).toContain(`/p/${created.payment.id}/qr.png`);
 
     const replay = await app.inject({
       method: 'POST',
@@ -382,6 +385,45 @@ describe('Tariffia merchant and payment API', () => {
     expect(confirmed.json().payment.status).toBe('CONFIRMED');
   });
 
+  it('records an unmined transaction hint and rejects a second payment attempt for the same request', async () => {
+    const merchant = await app.inject({
+      method: 'POST',
+      url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Pending Hash Store', email: 'pending-hash@example.com', walletAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/payment-links',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'pending-hash-link-01' },
+      payload: { description: 'Pending chain payment', amount: '6.00' },
+    });
+    const paymentId = created.json().payment.id as string;
+    const submittedHash = `0x${'2'.repeat(64)}`;
+    verificationResult = { state: 'not_found' };
+
+    const firstSubmission = await app.inject({
+      method: 'POST',
+      url: `/v1/public/payments/${paymentId}/verify`,
+      payload: { transactionHash: submittedHash },
+    });
+    expect(firstSubmission.statusCode).toBe(202);
+    const otherHash = await app.inject({
+      method: 'POST',
+      url: `/v1/public/payments/${paymentId}/verify`,
+      payload: { transactionHash: `0x${'3'.repeat(64)}` },
+    });
+    expect(otherHash.statusCode).toBe(409);
+
+    const payment = await app.inject({
+      method: 'GET', url: `/v1/payments/${paymentId}`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(payment.json().payment.status).toBe('PENDING');
+    expect(payment.json().payment.txHash).toBe(submittedHash);
+  });
+
   it('detects a matching USDC transfer and routes it through the same confirmation ledger', async () => {
     const merchant = await app.inject({
       method: 'POST',
@@ -424,6 +466,61 @@ describe('Tariffia merchant and payment API', () => {
     expect(payment.json().payment.txHash).toBe(transactionHash);
     const ledger = await app.inject({ method: 'GET', url: '/v1/ledger', headers: { authorization: `Bearer ${apiKey}` } });
     expect(ledger.json().entries.filter((entry: { entryType: string }) => entry.entryType === 'PAYMENT_CONFIRMED')).toHaveLength(1);
+  });
+
+  it('serves the hosted payment link, same-request QR, public details, and customer verification', async () => {
+    const merchant = await app.inject({
+      method: 'POST',
+      url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Checkout Shop', email: 'checkout@example.com', walletAddress: '0x9999999999999999999999999999999999999999' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const linkResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/payment-links',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'checkout-link-order-001' },
+      payload: { description: 'Mobile checkout order', amount: '8.75', currency: 'USDC' },
+    });
+    expect(linkResponse.statusCode).toBe(201);
+    const created = linkResponse.json();
+    expect(created.checkoutUrl).toBe(checkoutUrlForPayment(created.payment.id));
+
+    const page = await app.inject({ method: 'GET', url: `/p/${created.payment.id}` });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers['content-type']).toContain('text/html');
+    expect(page.body).toContain('Pay USDC from wallet');
+    expect(page.body).toContain('eth_sendTransaction');
+
+    const qr = await app.inject({ method: 'GET', url: created.qrUrl.replace('http://localhost:8080', '') });
+    expect(qr.statusCode).toBe(200);
+    expect(qr.headers['content-type']).toContain('image/png');
+    expect(qr.rawPayload.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+
+    const publicDetails = await app.inject({ method: 'GET', url: `/v1/public/payments/${created.payment.id}` });
+    expect(publicDetails.statusCode).toBe(200);
+    expect(publicDetails.json().payment).toMatchObject({
+      merchant: 'Checkout Shop',
+      orderId: created.order.id.slice(0, 8),
+      description: 'Mobile checkout order',
+      currency: 'USDC',
+      network: 'base',
+      recipientAddress: '0x9999999999999999999999999999999999999999',
+    });
+    expect(Number(publicDetails.json().payment.amount)).toBe(8.75);
+    expect(publicDetails.body).not.toContain('checkout@example.com');
+
+    const transactionHash = `0x${'1'.repeat(64)}`;
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 987654n };
+    const customerVerify = await app.inject({
+      method: 'POST',
+      url: `/v1/public/payments/${created.payment.id}/verify`,
+      payload: { transactionHash },
+    });
+    expect(customerVerify.statusCode).toBe(200);
+    expect(customerVerify.json().payment.status).toBe('CONFIRMED');
+    const updatedDetails = await app.inject({ method: 'GET', url: `/v1/public/payments/${created.payment.id}` });
+    expect(updatedDetails.json().payment.status).toBe('CONFIRMED');
   });
 
   function verificationServiceForTest(): PaymentVerificationService {

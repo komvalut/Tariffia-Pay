@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-2 status
+## Phase 1-3 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, payment and order lookup, append-only ledger, and the Base USDC adapter with transaction detection and server-side verification. Checkout, links, QR, webhooks, credits, AI pricing and dashboard are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links and QR payments. Webhooks, credits, AI pricing, subscriptions and the admin dashboard are later phases.
 
 ## Run locally
 
@@ -62,6 +62,22 @@ Other merchant endpoints:
 - `GET /v1/orders/:orderId`
 - `GET /v1/payments/:paymentId`
 - `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
+- `POST /v1/payment-links` with the same order payload and `Idempotency-Key`
+- Public checkout: `GET /p/:paymentId`
+- Public checkout details/status: `GET /v1/public/payments/:paymentId`
+- Public customer verification: `POST /v1/public/payments/:paymentId/verify`
+- Checkout QR image: `GET /p/:paymentId/qr.png`
+
+Create a shareable link from the merchant API:
+
+```sh
+curl -X POST http://localhost:8080/v1/payment-links \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -H 'idempotency-key: hosted-checkout-0001' \
+  -d '{"description":"Digital item","amount":"12.00","currency":"USDC"}'
+```
+
+The response contains `checkoutUrl` and `qrUrl`. The QR encodes that same `checkoutUrl`; it resolves to the server-owned payment ID and canonical payment details. The hosted page is responsive and supports EIP-1193 wallets on Base.
 - `GET /v1/customers/:customerId`
 - `GET /v1/ledger?limit=50`
 - `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
@@ -84,6 +100,14 @@ The endpoint responds with `202` while the transfer is unmined or below the conf
 
 An unmined or under-confirmed payment remains `PENDING`/`DETECTED` and is not recorded as paid. The detector resumes from its persisted block cursor after restarts. Invalid or mismatched transfers never update the order or ledger.
 
+## Hosted Checkout, Links and QR
+
+`POST /v1/payment-links` creates an order and payment through the same Payment Core as `POST /v1/orders`; it does not create a second payment record or balance system. The idempotent response includes `checkoutUrl` and `qrUrl`. `PUBLIC_BASE_URL` must be the externally reachable HTTPS origin when merchants share links publicly.
+
+The hosted page at `/p/:paymentId` fetches a limited public view of the existing payment: merchant, description, amount, USDC token, Base network, recipient and status. It supports an injected EIP-1193 browser wallet to send the exact ERC-20 transfer directly to the merchant, and polls the server for status. The browser submits a transaction hash only as a hint; server-side verification remains authoritative. Merchant API keys and private keys are never sent to the browser.
+
+The QR image encodes the same hosted checkout URL and payment ID, so scanning it resolves to the same server-owned payment request rather than a second payment or client-defined amount. Customers without an injected wallet can still scan/open the page and review or copy the payment details for a Base wallet.
+
 ## Security and custody
 
 - The admin credential and API-key pepper are server-only environment secrets.
@@ -93,7 +117,7 @@ An unmined or under-confirmed payment remains `PENDING`/`DETECTED` and is not re
 
 ## Architecture
 
-`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; the detector is separate from HTTP routes. `src/modules/` keeps merchant, customer, order, payment, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
+`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; transaction detection and checkout rendering are separate from merchant routes. `src/modules/` keeps merchant, customer, order, payment, payment-link, checkout, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
 
 ## Development checks
 

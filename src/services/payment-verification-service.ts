@@ -34,6 +34,16 @@ export class PaymentVerificationService {
     this.adapters = new Map(adapters.map((adapter) => [adapter.id, adapter]));
   }
 
+  async processPublic(paymentId: string, transactionHash: string): Promise<PaymentProcessingResult> {
+    const result = await this.db.query<{ merchant_id: string }>(
+      'SELECT merchant_id FROM payments WHERE id = $1',
+      [paymentId],
+    );
+    const payment = result.rows[0];
+    if (!payment) throw new HttpError(404, 'Payment not found', 'not_found');
+    return this.process(paymentId, payment.merchant_id, transactionHash);
+  }
+
   async process(paymentId: string, merchantId: string, transactionHash: string): Promise<PaymentProcessingResult> {
     const result = await this.db.query<PaymentRecord>(
       `SELECT id, merchant_id, order_id, amount::text AS amount, amount_base_units::text AS amount_base_units,
@@ -74,7 +84,13 @@ export class PaymentVerificationService {
       throw new HttpError(422, verification.reason, 'transaction_verification_failed');
     }
     if (verification.state === 'not_found') {
-      return { status: payment.status === 'DETECTED' ? 'DETECTED' : 'PENDING', transactionHash: normalizedHash, confirmations: 0 };
+      const alreadyConfirmed = await this.recordSubmittedHash(payment, normalizedHash);
+      return {
+        status: alreadyConfirmed ? 'CONFIRMED' : payment.status === 'DETECTED' ? 'DETECTED' : 'PENDING',
+        transactionHash: normalizedHash,
+        confirmations: 0,
+        ...(alreadyConfirmed ? { alreadyConfirmed: true } : {}),
+      };
     }
     if (verification.state === 'pending') {
       if (!verification.detected) {
@@ -94,6 +110,28 @@ export class PaymentVerificationService {
       status: 'CONFIRMED', transactionHash: normalizedHash, confirmations: verification.confirmations,
       ...(alreadyConfirmed ? { alreadyConfirmed: true } : {}),
     };
+  }
+
+  private async recordSubmittedHash(payment: PaymentRecord, transactionHash: string): Promise<boolean> {
+    return this.db.transaction(async (client) => {
+      const locked = await client.query<Pick<PaymentRecord, 'status' | 'tx_hash'>>(
+        'SELECT status, tx_hash FROM payments WHERE id = $1 AND merchant_id = $2 FOR UPDATE',
+        [payment.id, payment.merchant_id],
+      );
+      const current = locked.rows[0];
+      if (!current) throw new HttpError(404, 'Payment not found', 'not_found');
+      if (current.status === 'CONFIRMED') {
+        if (current.tx_hash?.toLowerCase() === transactionHash) return true;
+        throw new HttpError(409, 'Payment was already confirmed with a different transaction', 'payment_already_confirmed');
+      }
+      if (current.tx_hash && current.tx_hash.toLowerCase() !== transactionHash) {
+        throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
+      }
+      if (!current.tx_hash && current.status === 'PENDING') {
+        await client.query('UPDATE payments SET tx_hash = $2, updated_at = now() WHERE id = $1 AND status = \'PENDING\'', [payment.id, transactionHash]);
+      }
+      return false;
+    });
   }
 
   private async markDetected(payment: PaymentRecord, transactionHash: string): Promise<boolean> {
