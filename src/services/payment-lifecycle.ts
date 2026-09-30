@@ -7,12 +7,13 @@ export type PaymentLifecycleData = {
   amount: string;
   currency: string;
   network: string;
+  transactionId?: string;
   transactionHash?: string;
   reason?: string;
 };
 
 export interface PaymentLifecycleHandler {
-  onPaymentConfirmed?(client: PoolClient, payment: PaymentLifecycleData & { transactionHash: string }): Promise<void>;
-  onPaymentFailed?(client: PoolClient, payment: PaymentLifecycleData & { transactionHash: string; reason: string }): Promise<void>;
+  onPaymentConfirmed?(client: PoolClient, payment: PaymentLifecycleData & { transactionId: string; transactionHash: string }): Promise<void>;
+  onPaymentFailed?(client: PoolClient, payment: PaymentLifecycleData & { transactionId: string; transactionHash: string; reason: string }): Promise<void>;
   onPaymentExpired?(client: PoolClient, payment: PaymentLifecycleData): Promise<void>;
 }

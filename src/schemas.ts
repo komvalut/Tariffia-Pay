@@ -28,7 +28,8 @@ export const createOrderSchema = z.object({
   reference: z.string().trim().min(1).max(128).optional(),
   description: z.string().trim().min(1).max(500),
   amount: z.string().regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/, 'Amount must be a decimal with up to 30 integer and 6 fractional places'),
-  currency: z.literal('USDC').default('USDC'),
+  currency: z.string().trim().regex(/^[A-Z][A-Z0-9]{2,11}$/).default('USDC'),
+  adapter: z.string().trim().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
   metadata: z.record(z.unknown()).default({}),
 }).refine((value) => !/^0(?:\.0+)?$/.test(value.amount), {
   message: 'amount must be greater than zero',
@@ -37,7 +38,10 @@ export const createOrderSchema = z.object({
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 
 export const verifyPaymentSchema = z.object({
-  transactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Transaction hash must be a 32-byte EVM hash'),
+  transactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Transaction hash must be a 32-byte EVM hash').optional(),
+  transactionId: z.string().trim().min(1).max(512).optional(),
+}).refine((value) => Boolean(value.transactionHash) !== Boolean(value.transactionId), {
+  message: 'Provide exactly one of transactionHash or transactionId',
 });
 
 export const webhookEventTypes = [

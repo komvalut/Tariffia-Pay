@@ -64,7 +64,7 @@ describe('Tariffia TypeScript SDK', () => {
   it('covers payment status/verification, webhook management, credits, model pricing, and reported AI usage', async () => {
     const { calls, fetcher } = fakeFetch([
       jsonResponse({ payment: { id: 'pay-1', status: 'PENDING' } }),
-      jsonResponse({ payment: { status: 'CONFIRMED', transactionHash: `0x${'a'.repeat(64)}`, confirmations: 12 } }),
+      jsonResponse({ payment: { status: 'CONFIRMED', transactionId: `0x${'a'.repeat(64)}`, transactionHash: `0x${'a'.repeat(64)}`, confirmations: 12 } }),
       jsonResponse({ endpoint: { id: 'hook-1', name: 'Orders', events: ['payment.confirmed'], enabled: true } }, 201),
       jsonResponse({ endpoints: [{ id: 'hook-1', name: 'Orders', events: ['payment.confirmed'], enabled: true }] }),
       jsonResponse({ endpoint: { id: 'hook-1', name: 'Billing', events: ['payment.confirmed'], enabled: false } }),
@@ -90,7 +90,7 @@ describe('Tariffia TypeScript SDK', () => {
       '/v1/webhooks/hook-1', '/v1/webhooks/hook-1', '/v1/credits/customer-1/balance',
       '/v1/ai/models', '/v1/ai/usage',
     ]);
-    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ transactionHash: `0x${'a'.repeat(64)}` });
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ transactionId: `0x${'a'.repeat(64)}` });
     expect(new Headers(calls[8].init?.headers).get('idempotency-key')).toBeNull();
     expect(JSON.parse(String(calls[8].init?.body)).requestId).toBe('request-0001');
   });

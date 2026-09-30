@@ -37,7 +37,8 @@ export interface CreateOrderInput {
   reference?: string;
   description: string;
   amount: string;
-  currency?: 'USDC';
+  currency?: string;
+  adapter?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -47,7 +48,7 @@ export interface Order {
   reference: string | null;
   description: string;
   amount: string;
-  currency: 'USDC';
+  currency: string;
   status: OrderStatus;
   metadata: Record<string, unknown>;
   createdAt: string;
@@ -58,14 +59,14 @@ export interface Payment {
   orderId: string;
   amount: string;
   amountBaseUnits?: string;
-  currency: 'USDC';
+  currency: string;
   adapter?: string;
   network: string;
   recipientAddress?: string;
   tokenAddress?: string | null;
-  adapterData?: Record<string, unknown>;
   status: PaymentStatus;
   txHash?: string | null;
+  transactionId?: string | null;
   expiresAt?: string | null;
   detectedAt?: string | null;
   confirmedAt?: string | null;
@@ -91,13 +92,13 @@ export interface PaymentLinkResult {
 export interface PaymentStatusResult {
   payment: Payment & {
     amountBaseUnits: string;
-    adapterData: Record<string, unknown>;
   };
 }
 
 export interface VerifyPaymentResult {
   payment: {
     status: 'PENDING' | 'DETECTED' | 'CONFIRMED' | 'FAILED';
+    transactionId: string;
     transactionHash: string;
     confirmations: number;
     alreadyConfirmed?: boolean;
@@ -232,8 +233,8 @@ export class TariffiaClient {
     return this.request(`/v1/payments/${encodeURIComponent(paymentId)}`, 'GET', undefined, options);
   }
 
-  verifyPayment(paymentId: string, transactionHash: string, options: RequestOptions = {}): Promise<VerifyPaymentResult> {
-    return this.request(`/v1/payments/${encodeURIComponent(paymentId)}/verify`, 'POST', { transactionHash }, options);
+  verifyPayment(paymentId: string, transactionId: string, options: RequestOptions = {}): Promise<VerifyPaymentResult> {
+    return this.request(`/v1/payments/${encodeURIComponent(paymentId)}/verify`, 'POST', { transactionId }, options);
   }
 
   createWebhookEndpoint(input: CreateWebhookEndpointInput, options: RequestOptions = {}): Promise<{ endpoint: WebhookEndpoint }> {

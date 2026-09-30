@@ -1,6 +1,8 @@
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import type { PaymentAdapter, PaymentVerificationResult } from '../payment-adapter.js';
+import type { PaymentState, PaymentVerificationResult } from '../payment-adapter.js';
+import { PaymentAdapterError } from '../payment-adapters/errors.js';
+import type { PaymentAdapterRegistry } from '../payment-adapters/registry.js';
 import { newId } from '../security.js';
 import { enqueueWebhookEvent } from '../webhooks/outbox.js';
 import type { PoolClient } from 'pg';
@@ -24,7 +26,8 @@ type PaymentRecord = {
 };
 
 export type PaymentProcessingResult = {
-  status: 'PENDING' | 'DETECTED' | 'CONFIRMED' | 'FAILED';
+  status: PaymentState;
+  transactionId: string;
   transactionHash: string;
   confirmations: number;
   alreadyConfirmed?: boolean;
@@ -33,11 +36,9 @@ export type PaymentProcessingResult = {
 };
 
 export class PaymentVerificationService {
-  private readonly adapters: Map<string, PaymentAdapter>;
   private readonly lifecycleHandlers: PaymentLifecycleHandler[];
 
-  constructor(private readonly db: Database, adapters: PaymentAdapter[], lifecycleHandlers: PaymentLifecycleHandler[] = []) {
-    this.adapters = new Map(adapters.map((adapter) => [adapter.id, adapter]));
+  constructor(private readonly db: Database, private readonly adapters: PaymentAdapterRegistry, lifecycleHandlers: PaymentLifecycleHandler[] = []) {
     this.lifecycleHandlers = [...lifecycleHandlers];
   }
 
@@ -45,17 +46,17 @@ export class PaymentVerificationService {
     if (!this.lifecycleHandlers.includes(handler)) this.lifecycleHandlers.push(handler);
   }
 
-  async processPublic(paymentId: string, transactionHash: string): Promise<PaymentProcessingResult> {
+  async processPublic(paymentId: string, transactionId: string): Promise<PaymentProcessingResult> {
     const result = await this.db.query<{ merchant_id: string }>(
       'SELECT merchant_id FROM payments WHERE id = $1',
       [paymentId],
     );
     const payment = result.rows[0];
     if (!payment) throw new HttpError(404, 'Payment not found', 'not_found');
-    return this.process(paymentId, payment.merchant_id, transactionHash);
+    return this.process(paymentId, payment.merchant_id, transactionId);
   }
 
-  async process(paymentId: string, merchantId: string, transactionHash: string): Promise<PaymentProcessingResult> {
+  async process(paymentId: string, merchantId: string, transactionId: string): Promise<PaymentProcessingResult> {
     const result = await this.db.query<PaymentRecord>(
       `SELECT id, merchant_id, order_id, amount::text AS amount, amount_base_units::text AS amount_base_units,
               currency, adapter, network, recipient_address, token_address, adapter_data, status, tx_hash, created_at
@@ -64,75 +65,93 @@ export class PaymentVerificationService {
     );
     const payment = result.rows[0];
     if (!payment) throw new HttpError(404, 'Payment not found', 'not_found');
-    const normalizedHash = transactionHash.toLowerCase();
+    let normalizedTransactionId: string;
+    try {
+      normalizedTransactionId = this.adapters.normalizeTransactionId(payment.adapter, transactionId);
+    } catch (error) {
+      if (error instanceof PaymentAdapterError) throw adapterErrorToHttpError(error);
+      throw error;
+    }
     if (payment.status === 'CONFIRMED') {
-      if (payment.tx_hash?.toLowerCase() !== normalizedHash) {
+      if (payment.tx_hash !== normalizedTransactionId) {
         throw new HttpError(409, 'Payment was already confirmed with a different transaction', 'payment_already_confirmed');
       }
-      return { status: 'CONFIRMED', transactionHash: normalizedHash, confirmations: 0, alreadyConfirmed: true };
+      return { status: 'CONFIRMED', transactionId: normalizedTransactionId, transactionHash: normalizedTransactionId, confirmations: 0, alreadyConfirmed: true };
     }
     if (payment.status === 'FAILED') {
-      if (payment.tx_hash?.toLowerCase() !== normalizedHash) {
+      if (payment.tx_hash !== normalizedTransactionId) {
         throw new HttpError(409, 'Payment already failed with a different transaction', 'payment_already_failed');
       }
-      return { status: 'FAILED', transactionHash: normalizedHash, confirmations: 0, alreadyFailed: true };
+      return { status: 'FAILED', transactionId: normalizedTransactionId, transactionHash: normalizedTransactionId, confirmations: 0, alreadyFailed: true };
     }
     if (!['PENDING', 'DETECTED'].includes(payment.status)) {
       throw new HttpError(409, `Payment cannot be verified from status ${payment.status}`, 'invalid_payment_state');
     }
-    if (payment.tx_hash && payment.tx_hash.toLowerCase() !== normalizedHash) {
+    if (payment.tx_hash && payment.tx_hash !== normalizedTransactionId) {
       throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
     }
 
-    const adapter = this.adapters.get(payment.adapter);
-    if (!adapter) throw new HttpError(503, `Payment adapter '${payment.adapter}' is not configured`, 'adapter_unavailable');
-    const verification = await adapter.verifyTransaction({
-      paymentId: payment.id,
-      transactionHash: normalizedHash,
-      amount: payment.amount,
-      currency: payment.currency,
-      network: payment.network,
-      recipientAddress: payment.recipient_address,
-      tokenAddress: payment.token_address,
-      createdAt: payment.created_at,
-    });
+    let verification: PaymentVerificationResult;
+    try {
+      verification = await this.adapters.verifyTransaction(payment.adapter, {
+        paymentId: payment.id,
+        transactionId: normalizedTransactionId,
+        amount: payment.amount,
+        amountBaseUnits: payment.amount_base_units,
+        currency: payment.currency,
+        network: payment.network,
+        recipientAddress: payment.recipient_address,
+        tokenAddress: payment.token_address,
+        adapterData: payment.adapter_data,
+        createdAt: payment.created_at,
+      });
+    } catch (error) {
+      if (error instanceof PaymentAdapterError) throw adapterErrorToHttpError(error);
+      throw error;
+    }
 
     if (verification.state === 'rejected') {
-      throw new HttpError(422, verification.reason, 'transaction_verification_failed');
+      throw new HttpError(422, 'Transaction was rejected by the payment method', 'transaction_verification_failed');
     }
     if (verification.state === 'failed') {
-      const alreadyFailed = await this.fail(payment, normalizedHash, verification);
+      const alreadyFailed = await this.fail(payment, normalizedTransactionId, verification);
       return {
-        status: 'FAILED', transactionHash: normalizedHash, confirmations: 0,
+        status: 'FAILED', transactionId: normalizedTransactionId, transactionHash: normalizedTransactionId, confirmations: 0,
         failureReason: verification.reason,
         ...(alreadyFailed ? { alreadyFailed: true } : {}),
       };
     }
     if (verification.state === 'not_found') {
-      const alreadyConfirmed = await this.recordSubmittedHash(payment, normalizedHash);
+      const alreadyConfirmed = await this.recordSubmittedHash(payment, normalizedTransactionId);
       return {
         status: alreadyConfirmed ? 'CONFIRMED' : payment.status === 'DETECTED' ? 'DETECTED' : 'PENDING',
-        transactionHash: normalizedHash,
+        transactionId: normalizedTransactionId,
+        transactionHash: normalizedTransactionId,
         confirmations: 0,
         ...(alreadyConfirmed ? { alreadyConfirmed: true } : {}),
       };
     }
     if (verification.state === 'pending') {
       if (!verification.detected) {
-        return { status: 'PENDING', transactionHash: normalizedHash, confirmations: verification.confirmations };
+        return {
+          status: 'PENDING', transactionId: normalizedTransactionId, transactionHash: normalizedTransactionId,
+          confirmations: verification.receipt.confirmations,
+        };
       }
-      const alreadyConfirmed = await this.markDetected(payment, normalizedHash);
+      const alreadyConfirmed = await this.markDetected(payment, normalizedTransactionId);
       return {
         status: alreadyConfirmed ? 'CONFIRMED' : 'DETECTED',
-        transactionHash: normalizedHash,
-        confirmations: verification.confirmations,
+        transactionId: normalizedTransactionId,
+        transactionHash: normalizedTransactionId,
+        confirmations: verification.receipt.confirmations,
         ...(alreadyConfirmed ? { alreadyConfirmed: true } : {}),
       };
     }
 
-    const alreadyConfirmed = await this.confirm(payment, normalizedHash, verification);
+    const alreadyConfirmed = await this.confirm(payment, normalizedTransactionId, verification);
     return {
-      status: 'CONFIRMED', transactionHash: normalizedHash, confirmations: verification.confirmations,
+      status: 'CONFIRMED', transactionId: normalizedTransactionId, transactionHash: normalizedTransactionId,
+      confirmations: verification.receipt.confirmations,
       ...(alreadyConfirmed ? { alreadyConfirmed: true } : {}),
     };
   }
@@ -146,10 +165,10 @@ export class PaymentVerificationService {
       const current = locked.rows[0];
       if (!current) throw new HttpError(404, 'Payment not found', 'not_found');
       if (current.status === 'CONFIRMED') {
-        if (current.tx_hash?.toLowerCase() === transactionHash) return true;
+        if (current.tx_hash === transactionHash) return true;
         throw new HttpError(409, 'Payment was already confirmed with a different transaction', 'payment_already_confirmed');
       }
-      if (current.tx_hash && current.tx_hash.toLowerCase() !== transactionHash) {
+      if (current.tx_hash && current.tx_hash !== transactionHash) {
         throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
       }
       if (!current.tx_hash && current.status === 'PENDING') {
@@ -168,10 +187,10 @@ export class PaymentVerificationService {
       const row = locked.rows[0];
       if (!row) throw new HttpError(404, 'Payment not found', 'not_found');
       if (row.status === 'CONFIRMED') {
-        if (row.tx_hash?.toLowerCase() === transactionHash) return true;
+        if (row.tx_hash === transactionHash) return true;
         throw new HttpError(409, 'Payment was already confirmed with a different transaction', 'payment_already_confirmed');
       }
-      if (row.tx_hash && row.tx_hash.toLowerCase() !== transactionHash) {
+      if (row.tx_hash && row.tx_hash !== transactionHash) {
         throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
       }
       if (row.status === 'DETECTED' && row.tx_hash) return false;
@@ -195,13 +214,13 @@ export class PaymentVerificationService {
       const current = locked.rows[0];
       if (!current) throw new HttpError(404, 'Payment not found', 'not_found');
       if (current.status === 'FAILED') {
-        if (current.tx_hash?.toLowerCase() === transactionHash) return true;
+        if (current.tx_hash === transactionHash) return true;
         throw new HttpError(409, 'Payment already failed with a different transaction', 'payment_already_failed');
       }
       if (!['PENDING', 'DETECTED'].includes(current.status)) {
         throw new HttpError(409, `Payment cannot fail from status ${current.status}`, 'invalid_payment_state');
       }
-      if (current.tx_hash && current.tx_hash.toLowerCase() !== transactionHash) {
+      if (current.tx_hash && current.tx_hash !== transactionHash) {
         throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
       }
       if (current.status === 'PENDING') {
@@ -227,7 +246,7 @@ export class PaymentVerificationService {
         `INSERT INTO ledger_entries (id, merchant_id, order_id, payment_id, entry_type, amount, currency, reference, metadata)
          VALUES ($1, $2, $3, $4, 'PAYMENT_FAILED', 0, $5, $6, $7::jsonb)`,
         [newId(), payment.merchant_id, payment.order_id, payment.id, payment.currency, transactionHash,
-          JSON.stringify({ amount: payment.amount, network: payment.network, reason: failure.reason, blockNumber: failure.blockNumber.toString() })],
+          JSON.stringify({ amount: payment.amount, network: payment.network, reason: failure.reason, blockNumber: failure.receipt.blockNumber })],
       );
       await enqueueWebhookEvent({
         client,
@@ -236,7 +255,7 @@ export class PaymentVerificationService {
         resourceId: payment.id,
         data: {
           paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
-          currency: payment.currency, network: payment.network, transactionHash,
+          currency: payment.currency, network: payment.network, transactionId: transactionHash, transactionHash,
           reason: failure.reason, status: 'FAILED',
         },
       });
@@ -244,7 +263,7 @@ export class PaymentVerificationService {
         await handler.onPaymentFailed?.(client, {
           paymentId: payment.id, merchantId: payment.merchant_id, orderId: payment.order_id,
           amount: payment.amount, currency: payment.currency, network: payment.network,
-          transactionHash, reason: failure.reason,
+          transactionId: transactionHash, transactionHash, reason: failure.reason,
         });
       }
       return false;
@@ -260,13 +279,13 @@ export class PaymentVerificationService {
       const current = locked.rows[0];
       if (!current) throw new HttpError(404, 'Payment not found', 'not_found');
       if (current.status === 'CONFIRMED') {
-        if (current.tx_hash?.toLowerCase() === transactionHash) return true;
+        if (current.tx_hash === transactionHash) return true;
         throw new HttpError(409, 'Payment was already confirmed with a different transaction', 'payment_already_confirmed');
       }
       if (!['PENDING', 'DETECTED'].includes(current.status)) {
         throw new HttpError(409, `Payment cannot be confirmed from status ${current.status}`, 'invalid_payment_state');
       }
-      if (current.tx_hash && current.tx_hash.toLowerCase() !== transactionHash) {
+      if (current.tx_hash && current.tx_hash !== transactionHash) {
         throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
       }
       if (current.status === 'PENDING') {
@@ -275,7 +294,7 @@ export class PaymentVerificationService {
             WHERE id = $1 AND status = 'PENDING'`,
           [payment.id, transactionHash],
         );
-        await this.appendDetectedEvent(client, payment, transactionHash, verification.confirmations);
+        await this.appendDetectedEvent(client, payment, transactionHash, verification.receipt.confirmations);
       }
 
       const order = await client.query(
@@ -299,7 +318,7 @@ export class PaymentVerificationService {
         [
           newId(), payment.merchant_id, payment.order_id, payment.id, payment.amount,
           payment.currency, transactionHash,
-          JSON.stringify({ network: payment.network, tokenAddress: payment.token_address, confirmations: verification.confirmations, blockNumber: verification.blockNumber.toString() }),
+          JSON.stringify({ network: payment.network, tokenAddress: payment.token_address, confirmations: verification.receipt.confirmations, blockNumber: verification.receipt.blockNumber }),
         ],
       );
       await enqueueWebhookEvent({
@@ -309,8 +328,8 @@ export class PaymentVerificationService {
         resourceId: payment.id,
         data: {
           paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
-          currency: payment.currency, network: payment.network, transactionHash,
-          confirmations: verification.confirmations, status: 'CONFIRMED',
+          currency: payment.currency, network: payment.network, transactionId: transactionHash, transactionHash,
+          confirmations: verification.receipt.confirmations, status: 'CONFIRMED',
         },
       });
       await enqueueWebhookEvent({
@@ -320,13 +339,14 @@ export class PaymentVerificationService {
         resourceId: payment.order_id,
         data: {
           orderId: payment.order_id, paymentId: payment.id, amount: payment.amount,
-          currency: payment.currency, transactionHash, status: 'PAID',
+          currency: payment.currency, transactionId: transactionHash, transactionHash, status: 'PAID',
         },
       });
       for (const handler of this.lifecycleHandlers) {
         await handler.onPaymentConfirmed?.(client, {
           paymentId: payment.id, merchantId: payment.merchant_id, orderId: payment.order_id,
-          amount: payment.amount, currency: payment.currency, network: payment.network, transactionHash,
+          amount: payment.amount, currency: payment.currency, network: payment.network,
+          transactionId: transactionHash, transactionHash,
         });
       }
       return false;
@@ -347,9 +367,19 @@ export class PaymentVerificationService {
       resourceId: payment.id,
       data: {
         paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
-        currency: payment.currency, network: payment.network, transactionHash,
+        currency: payment.currency, network: payment.network, transactionId: transactionHash, transactionHash,
         confirmations, status: 'DETECTED',
       },
     });
   }
+}
+
+function adapterErrorToHttpError(error: PaymentAdapterError): HttpError {
+  if (error.code === 'invalid_request') {
+    return new HttpError(422, 'Transaction is not valid for the selected payment method', 'transaction_verification_failed');
+  }
+  if (error.code === 'invalid_response') {
+    return new HttpError(502, 'Payment adapter returned an invalid verification result', 'adapter_invalid_response');
+  }
+  return new HttpError(503, 'Payment adapter is temporarily unavailable', 'adapter_unavailable');
 }

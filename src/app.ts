@@ -5,7 +5,6 @@ import type { Database } from './db.js';
 import { config } from './config.js';
 import { HttpError } from './errors.js';
 import type { PaymentAdapter } from './payment-adapter.js';
-import { BaseUsdcAdapter } from './adapters/usdc/base-usdc-adapter.js';
 import { PaymentVerificationService } from './services/payment-verification-service.js';
 import { customerRoutes } from './modules/customers.js';
 import { checkoutRoutes } from './modules/checkout.js';
@@ -25,21 +24,31 @@ import { AiPricingEngine } from './services/ai-pricing-engine.js';
 import { adminAiRoutes } from './modules/admin-ai.js';
 import { aiRoutes } from './modules/ai.js';
 import { dashboardRoutes } from './modules/dashboard.js';
+import { adminPaymentAdapterRoutes } from './modules/admin-payment-adapters.js';
 import { safeErrorMetadata } from './safe-logging.js';
+import { createDefaultPaymentAdapterRegistry } from './payment-adapters/default-registry.js';
+import { PaymentAdapterRegistry } from './payment-adapters/registry.js';
 
 type AppOptions = {
   db: Database;
   migrate?: () => Promise<void>;
   paymentAdapter?: PaymentAdapter;
+  adapterRegistry?: PaymentAdapterRegistry;
   verification?: PaymentVerificationService;
   creditEngine?: CreditEngine;
 };
 
-export async function buildApp({ db, migrate, paymentAdapter, verification, creditEngine }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, verification, creditEngine }: AppOptions): Promise<FastifyInstance> {
   if (migrate) await migrate();
-  const adapter = paymentAdapter ?? new BaseUsdcAdapter();
-  const paymentVerification = verification ?? new PaymentVerificationService(db, [adapter]);
-  const paymentCore = new PaymentCoreService(db, adapter);
+  let adapters = adapterRegistry;
+  if (!adapters && paymentAdapter) {
+    adapters = new PaymentAdapterRegistry();
+    adapters.register(paymentAdapter, { enabled: true, settings: {}, isDefault: true });
+  }
+  adapters ??= createDefaultPaymentAdapterRegistry();
+  await adapters.initialize();
+  const paymentVerification = verification ?? new PaymentVerificationService(db, adapters);
+  const paymentCore = new PaymentCoreService(db, adapters);
   const credits = creditEngine ?? new CreditEngine(db);
   const aiPricing = new AiPricingEngine(db);
   await credits.initialize();
@@ -124,6 +133,7 @@ export async function buildApp({ db, migrate, paymentAdapter, verification, cred
   await app.register(creditRoutes, { db, credits, paymentCore });
   await app.register(adminCreditRoutes, { db, credits });
   await app.register(adminAiRoutes, { db });
+  await app.register(adminPaymentAdapterRoutes, { adapters });
   await app.register(aiRoutes, { db, aiPricing });
   await app.register(ledgerRoutes, { db });
   await app.register(dashboardRoutes, { db });

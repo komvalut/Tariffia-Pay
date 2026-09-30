@@ -27,7 +27,7 @@ export const orderRoutes: FastifyPluginAsync<{ db: Database; paymentCore: Paymen
       `SELECT o.id, o.customer_id AS "customerId", o.reference, o.description, o.amount::text AS amount,
               o.currency, o.status, o.metadata, o.created_at AS "createdAt",
               p.id AS "paymentId", p.status AS "paymentStatus", p.network, p.recipient_address AS "recipientAddress",
-              p.token_address AS "tokenAddress", p.tx_hash AS "txHash", p.expires_at AS "expiresAt"
+               p.token_address AS "tokenAddress", p.tx_hash AS "txHash", p.tx_hash AS "transactionId", p.expires_at AS "expiresAt"
          FROM orders o JOIN payments p ON p.order_id = o.id
         WHERE o.id = $1 AND o.merchant_id = $2`,
       [orderId, merchant.id],

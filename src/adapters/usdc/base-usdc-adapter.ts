@@ -16,14 +16,17 @@ import {
   zeroAddress,
 } from 'viem';
 import { base } from 'viem/chains';
+import { z } from 'zod';
 import { config } from '../../config.js';
 import type {
   AdapterPaymentDetails,
   PaymentAdapter,
+  PaymentAdapterManifest,
   PaymentRequest,
   PaymentVerificationInput,
   PaymentVerificationResult,
 } from '../../payment-adapter.js';
+import { PaymentAdapterError } from '../../payment-adapters/errors.js';
 
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
 const metadataAbi = [{
@@ -42,6 +45,39 @@ const transferFunction = [{
 }] as const;
 type BaseRpcClient = PublicClient<HttpTransport, typeof base>;
 
+const configurationSchema = z.object({
+  rpcUrl: z.string().url(),
+  tokenAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  minimumConfirmations: z.number().int().min(1),
+}).strict();
+
+export function baseUsdcAdapterSettings(): Record<string, unknown> {
+  return {
+    rpcUrl: config.BASE_RPC_URL,
+    tokenAddress: config.USDC_TOKEN_ADDRESS,
+    minimumConfirmations: config.USDC_MIN_CONFIRMATIONS,
+  };
+}
+
+const manifest: PaymentAdapterManifest = {
+  id: 'usdc',
+  name: 'Base USDC',
+  version: '1.0.0',
+  description: 'USDC payments verified on Base.',
+  capabilities: {
+    paymentRequests: true,
+    transactionVerification: true,
+    automaticDetection: true,
+    refunds: false,
+    currencies: ['USDC'],
+    networks: ['base'],
+  },
+  idempotency: {
+    paymentCreation: 'stable-key-required',
+    transactionVerification: 'network-and-transaction-id',
+  },
+};
+
 export type DetectedUsdcTransfer = {
   transactionHash: Hash;
   recipientAddress: Address;
@@ -51,47 +87,89 @@ export type DetectedUsdcTransfer = {
 
 export class BaseUsdcAdapter implements PaymentAdapter {
   readonly id = 'usdc';
+  readonly manifest = manifest;
   readonly network = 'base';
   readonly currency = 'USDC';
-  readonly tokenAddress: Address;
   readonly chainId = base.id;
-  private readonly client: BaseRpcClient;
+  private client: BaseRpcClient;
+  private readonly injectedClient?: BaseRpcClient;
+  private tokenAddress: Address;
+  private minimumConfirmations: number;
+  private started = true;
   private tokenValidation?: Promise<string | null>;
 
   constructor(client?: BaseRpcClient) {
-    this.tokenAddress = getAddress(config.USDC_TOKEN_ADDRESS);
+    this.injectedClient = client;
+    const settings = configurationSchema.parse(baseUsdcAdapterSettings());
+    this.tokenAddress = getAddress(settings.tokenAddress);
+    this.minimumConfirmations = settings.minimumConfirmations;
     if (this.tokenAddress === zeroAddress) throw new Error('USDC token address cannot be the zero address');
-    this.client = client ?? createPublicClient({
-      chain: base,
-      transport: http(config.BASE_RPC_URL, { retryCount: 2, timeout: 12_000 }),
-    });
+    this.client = client ?? this.createClient(settings.rpcUrl);
+  }
+
+  async initialize(settings: Readonly<Record<string, unknown>>): Promise<void> {
+    const parsed = configurationSchema.safeParse(settings);
+    if (!parsed.success || parsed.data.tokenAddress.toLowerCase() === zeroAddress) {
+      throw new PaymentAdapterError('invalid_configuration', 'initialize', 'Base USDC adapter configuration is invalid');
+    }
+    this.tokenAddress = getAddress(parsed.data.tokenAddress);
+    this.minimumConfirmations = parsed.data.minimumConfirmations;
+    this.client = this.injectedClient ?? this.createClient(parsed.data.rpcUrl);
+    this.tokenValidation = undefined;
+    this.started = true;
+  }
+
+  async shutdown(): Promise<void> {
+    this.started = false;
+  }
+
+  async health() {
+    if (!this.started) return { status: 'unavailable' as const, message: 'Adapter is stopped' };
+    try {
+      const issue = await this.validateTokenConfiguration();
+      return issue
+        ? { status: 'degraded' as const, message: 'Configured Base USDC contract is not usable' }
+        : { status: 'healthy' as const, message: 'Base RPC and USDC contract are available' };
+    } catch {
+      return { status: 'unavailable' as const, message: 'Base RPC health check failed' };
+    }
+  }
+
+  normalizeTransactionId(transactionId: string): string {
+    return transactionId.toLowerCase();
   }
 
   async createRequest(input: PaymentRequest): Promise<AdapterPaymentDetails> {
-    if (input.currency.toUpperCase() !== this.currency) throw new Error(`Unsupported currency for ${this.id}: ${input.currency}`);
-    if (!isAddress(input.recipient)) throw new Error('Payment recipient is not a valid EVM address');
-    if (input.recipient.toLowerCase() === zeroAddress) throw new Error('Payment recipient cannot be the zero address');
+    if (input.currency.toUpperCase() !== this.currency) {
+      throw new PaymentAdapterError('invalid_request', 'create_request', `Unsupported currency for ${this.id}: ${input.currency}`);
+    }
+    if (!isAddress(input.recipient)) {
+      throw new PaymentAdapterError('invalid_request', 'create_request', 'Payment recipient is not a valid EVM address');
+    }
+    if (input.recipient.toLowerCase() === zeroAddress) {
+      throw new PaymentAdapterError('invalid_request', 'create_request', 'Payment recipient cannot be the zero address');
+    }
     if (!/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/.test(input.amount) || /^0(?:\.0+)?$/.test(input.amount)) {
-      throw new Error('USDC amount must be positive and have at most 6 decimal places');
+      throw new PaymentAdapterError('invalid_request', 'create_request', 'USDC amount must be positive and have at most 6 decimal places');
     }
     const amountBaseUnits = parseUnits(input.amount, 6);
-    if (amountBaseUnits <= 0n) throw new Error('USDC amount must be greater than zero');
+    if (amountBaseUnits <= 0n) throw new PaymentAdapterError('invalid_request', 'create_request', 'USDC amount must be greater than zero');
     return {
       adapter: this.id,
       network: this.network,
       currency: this.currency,
-      recipientAddress: getAddress(input.recipient),
-      tokenAddress: this.tokenAddress,
+      recipientAddress: getAddress(input.recipient).toLowerCase(),
+      tokenAddress: this.tokenAddress.toLowerCase(),
+      amountBaseUnits: amountBaseUnits.toString(),
       adapterData: {
         chainId: this.chainId,
         decimals: 6,
-        amountBaseUnits: amountBaseUnits.toString(),
       },
     };
   }
 
   async verifyTransaction(input: PaymentVerificationInput): Promise<PaymentVerificationResult> {
-    if (!isHash(input.transactionHash)) return { state: 'rejected', reason: 'Malformed transaction hash' };
+    if (!isHash(input.transactionId)) return { state: 'rejected', reason: 'Malformed transaction hash' };
     if (input.currency.toUpperCase() !== this.currency || input.network !== this.network) {
       return { state: 'rejected', reason: 'Payment asset or network does not match the USDC/Base adapter' };
     }
@@ -105,7 +183,7 @@ export class BaseUsdcAdapter implements PaymentAdapter {
 
     let receipt;
     try {
-      receipt = await this.client.getTransactionReceipt({ hash: input.transactionHash as Hash });
+      receipt = await this.client.getTransactionReceipt({ hash: input.transactionId as Hash });
     } catch (error) {
       if (error instanceof TransactionReceiptNotFoundError) return { state: 'not_found' };
       throw error;
@@ -117,7 +195,7 @@ export class BaseUsdcAdapter implements PaymentAdapter {
       return { state: 'rejected', reason: 'Transfer predates the payment request' };
     }
     if (receipt.status === 'reverted') {
-      const transaction = await this.client.getTransaction({ hash: input.transactionHash as Hash });
+      const transaction = await this.client.getTransaction({ hash: input.transactionId as Hash });
       if (transaction.to?.toLowerCase() !== this.tokenAddress.toLowerCase()) {
         return { state: 'rejected', reason: 'Reverted transaction did not call the configured USDC token' };
       }
@@ -130,7 +208,10 @@ export class BaseUsdcAdapter implements PaymentAdapter {
       } catch {
         return { state: 'rejected', reason: 'Reverted transaction is not the expected USDC transfer' };
       }
-      return { state: 'failed', reason: 'USDC transfer transaction reverted', blockNumber: receipt.blockNumber };
+      return {
+        state: 'failed', reason: 'USDC transfer transaction reverted',
+        receipt: this.toPaymentReceipt(input, 'failed', 0, receipt.blockNumber),
+      };
     }
 
     let matchingTransfer = false;
@@ -154,10 +235,16 @@ export class BaseUsdcAdapter implements PaymentAdapter {
 
     const head = await this.client.getBlockNumber();
     const confirmations = head >= receipt.blockNumber ? Number(head - receipt.blockNumber + 1n) : 0;
-    if (confirmations < config.USDC_MIN_CONFIRMATIONS) {
-      return { state: 'pending', detected: true, confirmations, blockNumber: receipt.blockNumber };
+    if (confirmations < this.minimumConfirmations) {
+      return {
+        state: 'pending', detected: true,
+        receipt: this.toPaymentReceipt(input, 'pending', confirmations, receipt.blockNumber),
+      };
     }
-    return { state: 'verified', confirmations, blockNumber: receipt.blockNumber };
+    return {
+      state: 'verified',
+      receipt: this.toPaymentReceipt(input, 'confirmed', confirmations, receipt.blockNumber),
+    };
   }
 
   async getBlockNumber(): Promise<bigint> {
@@ -180,6 +267,28 @@ export class BaseUsdcAdapter implements PaymentAdapter {
       });
     }
     return this.tokenValidation;
+  }
+
+  private createClient(rpcUrl: string): BaseRpcClient {
+    return createPublicClient({ chain: base, transport: http(rpcUrl, { retryCount: 2, timeout: 12_000 }) });
+  }
+
+  private toPaymentReceipt(
+    input: PaymentVerificationInput,
+    state: 'pending' | 'confirmed' | 'failed',
+    confirmations: number,
+    blockNumber: bigint | null,
+  ) {
+    return {
+      transactionId: input.transactionId,
+      network: this.network,
+      state,
+      amount: input.amount,
+      currency: input.currency,
+      recipient: input.recipientAddress,
+      confirmations,
+      blockNumber: blockNumber?.toString() ?? null,
+    };
   }
 
   async scanTransfers(fromBlock: bigint, toBlock: bigint): Promise<DetectedUsdcTransfer[]> {

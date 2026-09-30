@@ -10,6 +10,7 @@ import {
 } from 'viem';
 import { BaseUsdcAdapter } from '../src/adapters/usdc/base-usdc-adapter.js';
 import { config } from '../src/config.js';
+import { PaymentAdapterError } from '../src/payment-adapters/errors.js';
 
 const token = getAddress(config.USDC_TOKEN_ADDRESS);
 const recipient = getAddress('0x2222222222222222222222222222222222222222');
@@ -70,16 +71,27 @@ function adapterFixture(options: {
 
 const input = {
   paymentId: 'payment-1',
-  transactionHash,
+  transactionId: transactionHash,
   amount: '4.500000',
+  amountBaseUnits: '4500000',
   currency: 'USDC',
   network: 'base',
   recipientAddress: recipient,
   tokenAddress: token,
+  adapterData: {},
   createdAt,
 };
 
 describe('Base USDC adapter', () => {
+  it('validates adapter-specific configuration during initialization', async () => {
+    const { adapter } = adapterFixture();
+    await expect(adapter.initialize({
+      rpcUrl: 'not-a-url', tokenAddress: config.USDC_TOKEN_ADDRESS, minimumConfirmations: 12,
+    })).rejects.toMatchObject({
+      code: 'invalid_configuration', operation: 'initialize',
+    } satisfies Partial<PaymentAdapterError>);
+  });
+
   it('creates exact 6-decimal Base USDC payment details for the merchant recipient', async () => {
     const { adapter } = adapterFixture();
     const details = await adapter.createRequest({
@@ -87,22 +99,33 @@ describe('Base USDC adapter', () => {
     });
     expect(details).toMatchObject({
       adapter: 'usdc', network: 'base', currency: 'USDC',
-      recipientAddress: recipient, tokenAddress: token,
-      adapterData: { chainId: 8453, decimals: 6, amountBaseUnits: '4500000' },
+      recipientAddress: recipient.toLowerCase(), tokenAddress: token.toLowerCase(),
+      amountBaseUnits: '4500000', adapterData: { chainId: 8453, decimals: 6 },
     });
+  });
+
+  it('canonicalizes EVM transaction hashes using Base lowercase rules', () => {
+    const { adapter } = adapterFixture();
+    expect(adapter.normalizeTransactionId(`0x${'D'.repeat(64)}`)).toBe(transactionHash);
   });
 
   it('verifies chain, configured token, Transfer recipient, exact amount and confirmations', async () => {
     const { adapter } = adapterFixture();
     await expect(adapter.verifyTransaction(input)).resolves.toEqual({
-      state: 'verified', confirmations: 12, blockNumber: 100n,
+      state: 'verified', receipt: {
+        transactionId: input.transactionId, network: 'base', state: 'confirmed', amount: input.amount, currency: input.currency,
+        recipient: input.recipientAddress, confirmations: 12, blockNumber: '100',
+      },
     });
   });
 
   it('waits until the configured confirmation depth before confirming', async () => {
     const { adapter } = adapterFixture({ head: 110n });
     await expect(adapter.verifyTransaction(input)).resolves.toEqual({
-      state: 'pending', detected: true, confirmations: 11, blockNumber: 100n,
+      state: 'pending', detected: true, receipt: {
+        transactionId: input.transactionId, network: 'base', state: 'pending', amount: input.amount, currency: input.currency,
+        recipient: input.recipientAddress, confirmations: 11, blockNumber: '100',
+      },
     });
   });
 
@@ -147,7 +170,11 @@ describe('Base USDC adapter', () => {
   it('recognizes a matching reverted payment, rejects unrelated failures, and handles unmined transactions', async () => {
     const reverted = adapterFixture({ receiptStatus: 'reverted' });
     await expect(reverted.adapter.verifyTransaction(input))
-      .resolves.toMatchObject({ state: 'failed', reason: 'USDC transfer transaction reverted', blockNumber: 100n });
+      .resolves.toMatchObject({
+        state: 'failed', reason: 'USDC transfer transaction reverted',
+        receipt: { transactionId: input.transactionId, state: 'failed', amount: input.amount, currency: input.currency,
+          recipient: input.recipientAddress, blockNumber: '100' },
+      });
     const unrelated = adapterFixture({ receiptStatus: 'reverted' });
     unrelated.client.getTransaction.mockResolvedValue({
       to: token,

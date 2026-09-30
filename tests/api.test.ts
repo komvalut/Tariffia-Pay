@@ -3,11 +3,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newDb } from 'pg-mem';
 import type { Pool } from 'pg';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Database } from '../src/db.js';
 import { buildApp } from '../src/app.js';
 import { parseUnits } from 'viem';
-import type { AdapterPaymentDetails, PaymentAdapter, PaymentVerificationResult } from '../src/payment-adapter.js';
+import type {
+  AdapterPaymentDetails,
+  PaymentAdapter,
+  PaymentVerificationInput,
+  PaymentVerificationResult,
+} from '../src/payment-adapter.js';
+import { PaymentAdapterRegistry } from '../src/payment-adapters/registry.js';
 import { PaymentVerificationService } from '../src/services/payment-verification-service.js';
 import { UsdcPaymentDetector } from '../src/services/usdc-payment-detector.js';
 import { WebhookDeliveryWorker } from '../src/services/webhook-delivery-worker.js';
@@ -16,12 +22,38 @@ import { verifyWebhookSignature } from '../src/webhooks/signature.js';
 
 const usdcAddress = '0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913';
 
+type FixtureVerificationResult =
+  | { state: 'not_found' }
+  | { state: 'pending'; detected: boolean; confirmations: number; blockNumber?: bigint }
+  | { state: 'rejected'; reason: string }
+  | { state: 'failed'; reason: string; blockNumber: bigint }
+  | { state: 'verified'; confirmations: number; blockNumber: bigint };
+
+function standardFixtureVerification(input: PaymentVerificationInput, result: FixtureVerificationResult): PaymentVerificationResult {
+  if (result.state === 'not_found' || result.state === 'rejected') return result;
+  const state = result.state === 'verified' ? 'confirmed' : result.state;
+  return {
+    ...result,
+    receipt: {
+      transactionId: input.transactionId,
+      network: input.network,
+      state,
+      amount: input.amount,
+      currency: input.currency,
+      recipient: input.recipientAddress,
+      confirmations: result.confirmations ?? 0,
+      blockNumber: 'blockNumber' in result ? result.blockNumber.toString() : null,
+    },
+  } as PaymentVerificationResult;
+}
+
 describe('Tariffia merchant and payment API', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
   let db: Database;
   let pool: Pool;
-  let verificationResult: PaymentVerificationResult;
+  let verificationResult: FixtureVerificationResult;
   let paymentAdapter: PaymentAdapter;
+  let adapters: PaymentAdapterRegistry;
 
   beforeEach(async () => {
     const memory = newDb({ autoCreateForeignKeyIndices: true });
@@ -71,18 +103,34 @@ describe('Tariffia merchant and payment API', () => {
     verificationResult = { state: 'not_found' };
     paymentAdapter = {
       id: 'usdc',
-      createRequest: async (input): Promise<AdapterPaymentDetails> => ({
+      manifest: {
+        id: 'usdc', name: 'Base USDC', version: 'test', description: 'Test Base USDC adapter',
+        capabilities: {
+          paymentRequests: true, transactionVerification: true, automaticDetection: true, refunds: false,
+          currencies: ['USDC'], networks: ['base'],
+        },
+        idempotency: { paymentCreation: 'stable-key-required', transactionVerification: 'network-and-transaction-id' },
+      },
+      initialize: async () => {},
+      shutdown: async () => {},
+      health: async () => ({ status: 'healthy', message: 'Test adapter is ready' }),
+      normalizeTransactionId: (transactionId) => transactionId.toLowerCase(),
+      createRequest: vi.fn(async (input): Promise<AdapterPaymentDetails> => ({
         adapter: 'usdc',
         network: 'base',
         currency: 'USDC',
         recipientAddress: input.recipient.toLowerCase(),
         tokenAddress: usdcAddress.toLowerCase(),
-        adapterData: { chainId: 8453, decimals: 6, amountBaseUnits: parseUnits(input.amount, 6).toString() },
-      }),
-      verifyTransaction: async () => verificationResult,
+        amountBaseUnits: parseUnits(input.amount, 6).toString(),
+        adapterData: { chainId: 8453, decimals: 6 },
+      })),
+      verifyTransaction: async (input) => standardFixtureVerification(input, verificationResult as FixtureVerificationResult),
     };
-    const verification = new PaymentVerificationService(db, [paymentAdapter]);
-    app = await buildApp({ db, paymentAdapter, verification });
+    adapters = new PaymentAdapterRegistry();
+    adapters.register(paymentAdapter, { enabled: true, settings: {}, isDefault: true });
+    await adapters.initialize();
+    const verification = new PaymentVerificationService(db, adapters);
+    app = await buildApp({ db, adapterRegistry: adapters, verification });
   });
 
   afterEach(async () => {
@@ -133,8 +181,17 @@ describe('Tariffia merchant and payment API', () => {
     expect(Number(created.order.amount)).toBe(4.5);
     expect(created.order.status).toBe('PENDING');
     expect(created.payment.status).toBe('PENDING');
+    expect(created.payment.adapterData).toBeUndefined();
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(1);
+    expect(paymentAdapter.createRequest).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: expect.any(String),
+    }));
     expect(created.checkoutUrl).toBe(checkoutUrlForPayment(created.payment.id));
     expect(created.qrUrl).toContain(`/p/${created.payment.id}/qr.png`);
+    const paymentView = await app.inject({
+      method: 'GET', url: `/v1/payments/${created.payment.id}`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(paymentView.json().payment.adapterData).toBeUndefined();
 
     const replay = await app.inject({
       method: 'POST',
@@ -146,6 +203,7 @@ describe('Tariffia merchant and payment API', () => {
     expect(replay.headers['idempotency-replayed']).toBe('true');
     expect(replay.json().order.id).toBe(created.order.id);
     expect(replay.json().payment.id).toBe(created.payment.id);
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(1);
 
     const conflict = await app.inject({
       method: 'POST',
@@ -171,6 +229,66 @@ describe('Tariffia merchant and payment API', () => {
   it('does not permit merchant creation without the admin secret', async () => {
     const response = await app.inject({ method: 'POST', url: '/v1/admin/merchants', payload: {} });
     expect(response.statusCode).toBe(401);
+  });
+
+  it('reports adapter status to admins, blocks new payments when disabled, and preserves existing payments', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Adapter Store', email: 'adapter-store@example.com', walletAddress: '0x1212121212121212121212121212121212121212' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const created = await app.inject({
+      method: 'POST', url: '/v1/orders',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'adapter-enabled-order' },
+      payload: { description: 'Before disable', amount: '2.50', adapter: 'usdc' },
+    });
+    expect(created.statusCode).toBe(201);
+    const payment = created.json().payment;
+    const transactionHash = `0x${'c'.repeat(64)}`;
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 800n };
+    const confirmation = await app.inject({
+      method: 'POST', url: `/v1/payments/${payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionId: transactionHash },
+    });
+    expect(confirmation.statusCode).toBe(200);
+
+    await app.close();
+    const disabledAdapters = new PaymentAdapterRegistry();
+    disabledAdapters.register(paymentAdapter, { enabled: false, settings: {}, isDefault: true });
+    await disabledAdapters.initialize();
+    app = await buildApp({ db, adapterRegistry: disabledAdapters });
+
+    const details = await app.inject({
+      method: 'GET', url: `/v1/payments/${payment.id}`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(details.statusCode).toBe(200);
+    expect(details.json().payment.status).toBe('CONFIRMED');
+    const confirmedRetry = await app.inject({
+      method: 'POST', url: `/v1/payments/${payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionId: transactionHash },
+    });
+    expect(confirmedRetry.statusCode).toBe(200);
+    expect(confirmedRetry.json().payment.alreadyConfirmed).toBe(true);
+
+    const newPayment = await app.inject({
+      method: 'POST', url: '/v1/orders',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'adapter-disabled-order' },
+      payload: { description: 'After disable', amount: '2.50', adapter: 'usdc' },
+    });
+    expect(newPayment.statusCode).toBe(503);
+    expect(newPayment.json().error).toBe('adapter_unavailable');
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(1);
+
+    const unauthorized = await app.inject({ method: 'GET', url: '/v1/admin/payment-adapters' });
+    expect(unauthorized.statusCode).toBe(401);
+    const adapters = await app.inject({
+      method: 'GET', url: '/v1/admin/payment-adapters',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(adapters.statusCode).toBe(200);
+    expect(adapters.json().adapters).toMatchObject([{ id: 'usdc', status: 'disabled' }]);
+    expect(adapters.body).not.toContain('adapterData');
   });
 
   it('lists API key metadata without exposing hashes and supports revocation', async () => {
@@ -1217,6 +1335,6 @@ describe('Tariffia merchant and payment API', () => {
   }, 15_000);
 
   function verificationServiceForTest(): PaymentVerificationService {
-    return new PaymentVerificationService(db, [paymentAdapter]);
+    return new PaymentVerificationService(db, adapters);
   }
 });

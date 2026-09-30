@@ -17,6 +17,7 @@ const schema = z.object({
   PAYMENT_SCAN_LOOKBACK_BLOCKS: z.coerce.number().int().min(1).max(10_000).default(100),
   PAYMENT_SCAN_BLOCK_RANGE: z.coerce.number().int().min(1).max(5_000).default(500),
   PAYMENT_EXPIRATION_MINUTES: z.coerce.number().int().min(1).max(10_080).default(60),
+  USDC_ADAPTER_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   WEBHOOK_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/).default('0'.repeat(64)),
   WEBHOOK_WORKER_INTERVAL_MS: z.coerce.number().int().min(1000).default(3000),
   WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(8),

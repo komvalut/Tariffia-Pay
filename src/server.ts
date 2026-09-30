@@ -8,14 +8,17 @@ import { UsdcPaymentDetector } from './services/usdc-payment-detector.js';
 import { WebhookDeliveryWorker } from './services/webhook-delivery-worker.js';
 import { CreditEngine } from './services/credit-engine.js';
 import { safeErrorMetadata } from './safe-logging.js';
+import { createDefaultPaymentAdapterRegistry } from './payment-adapters/default-registry.js';
 
 const db = new PostgresDatabase(config.DATABASE_URL);
-const paymentAdapter = new BaseUsdcAdapter();
-const verification = new PaymentVerificationService(db, [paymentAdapter]);
+const adapters = createDefaultPaymentAdapterRegistry();
+await adapters.initialize();
+const paymentAdapter = adapters.getForVerification('usdc') as BaseUsdcAdapter;
+const verification = new PaymentVerificationService(db, adapters);
 const detector = new UsdcPaymentDetector(db, paymentAdapter, verification);
 const credits = new CreditEngine(db);
 const webhookWorker = new WebhookDeliveryWorker(db, fetch, [credits], { pinDns: config.NODE_ENV === 'production' });
-const app = await buildApp({ db, migrate: () => db.migrate(), paymentAdapter, verification, creditEngine: credits });
+const app = await buildApp({ db, migrate: () => db.migrate(), adapterRegistry: adapters, verification, creditEngine: credits });
 let detectorTimer: NodeJS.Timeout | undefined;
 let webhookTimer: NodeJS.Timeout | undefined;
 let detectorRun: Promise<void> | undefined;
@@ -31,7 +34,11 @@ const shutdown = (): Promise<void> => {
       await app.close();
       await Promise.all([detectorRun, webhookRun].filter((run): run is Promise<void> => run !== undefined));
     } finally {
-      await db.close();
+      try {
+        await adapters.shutdown();
+      } finally {
+        await db.close();
+      }
     }
   })();
   return shutdownRun;

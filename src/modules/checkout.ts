@@ -74,6 +74,7 @@ export const checkoutRoutes: FastifyPluginAsync<{ db: Database; verification: Pa
         recipientAddress: payment.recipient_address,
         tokenAddress: payment.token_address,
         txHash: payment.tx_hash,
+        transactionId: payment.tx_hash,
         status: payment.status,
         orderStatus: payment.order_status,
         expiresAt: payment.expires_at,
@@ -85,7 +86,7 @@ export const checkoutRoutes: FastifyPluginAsync<{ db: Database; verification: Pa
     const { paymentId } = request.params as { paymentId: string };
     if (!publicIdPattern.test(paymentId)) throw new HttpError(404, 'Payment link not found', 'not_found');
     const body = parseBody(verifyPaymentSchema, request.body);
-    const result = await verification.processPublic(paymentId, body.transactionHash);
+    const result = await verification.processPublic(paymentId, body.transactionId ?? body.transactionHash!);
     return reply.code(['CONFIRMED', 'FAILED'].includes(result.status) ? 200 : 202).send({ payment: result });
   });
 };
