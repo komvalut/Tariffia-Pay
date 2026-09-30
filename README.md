@@ -2,9 +2,9 @@
 
 Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
 
-## Phase 1-4 status
+## Phase 1-5 status
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments and signed/retried merchant webhooks. Credits, AI pricing, subscriptions and other payment methods are later phases.
+Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, Base USDC verification, hosted checkout, payment links, QR payments, signed/retried merchant webhooks and an internal customer Credit Engine. AI pricing, subscriptions and other payment methods are later phases.
 
 ## Run locally
 
@@ -66,6 +66,9 @@ Other merchant endpoints:
 - `GET /v1/customers/:customerId`
 - `GET /v1/ledger?limit=50`
 - `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
+- `POST /v1/credits/topups`, `POST /v1/credits/deductions`
+- `GET /v1/credits/:customerId/balance`, `/topups`, `/usage`
+- Admin: `GET/PUT /v1/admin/credits/settings`, `GET /v1/admin/credits/accounts`, `GET /v1/admin/credits/transactions`
 
 Create a shareable link from the merchant API:
 
@@ -108,7 +111,7 @@ Checkout routes are `GET /p/:paymentId`, `GET /p/:paymentId/qr.png`, `GET /v1/pu
 
 ## Webhooks
 
-Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired` and `order.paid`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger transition, then delivered asynchronously.
+Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired`, `order.paid`, `credit.topup` and `credit.deducted`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger/credit transition, then delivered asynchronously.
 
 Payments expire after `PAYMENT_EXPIRATION_MINUTES` only when no transaction hash has been submitted. A submitted or on-chain-detected transfer is not expired while verification is pending. `payment.failed` is emitted only when the configured USDC contract receipt proves that the matching transfer call reverted; an arbitrary invalid hash does not fail the payment.
 
@@ -132,12 +135,35 @@ Endpoint management and logs are available at `GET/POST /v1/webhooks`, `PATCH/DE
 
 - The admin credential and API-key pepper are server-only environment secrets.
 - Merchant API keys are shown once and stored only as HMAC-SHA256 hashes.
-- Phase 1 does not hold or sign with customer or merchant private keys.
+- Tariffia does not hold or sign with customer or merchant private keys.
+- USDC payments and internal `CREDITS` balances use different records and currency labels; credits cannot be withdrawn or cashed out.
 - The frontend never determines payment status. Only the configured chain adapter can confirm a payment after independent server-side verification.
+
+## Credit Engine
+
+USDC top-ups create real Base USDC payment requests through the existing Payment Core. Credits are not USDC: they are an internal, non-withdrawable usage balance held in per-merchant/per-customer credit accounts. The default conversion is `1 USDC = 100 CREDITS`; the default top-up range is `1` to `1000 USDC`. Environment values seed settings when the database is initialized; admins can update the stored conversion rate and bounds through `/v1/admin/credits/settings`.
+
+Credits are issued only inside the same database transaction that confirms the USDC payment, records the credit transaction, updates the account, and appends the separate `CREDIT_TOPUP` CREDITS ledger entry. Deductions use an atomic `balance >= amount` database update, a non-negative balance constraint, and `Idempotency-Key`; concurrent attempts cannot spend the same balance twice. `CREDIT_DEDUCTION` entries use currency `CREDITS`, separate from `PAYMENT_CONFIRMED` entries in USDC. The ledger is an event record, not a wallet-balance calculation.
+
+The `credit.topup` and `credit.deducted` webhook events report internal credit changes. No AI provider, pricing, subscription, payout or cash-out behavior is part of this phase.
+
+```sh
+# Create a USDC payment link that will top up this merchant customer after payment verification.
+curl -X POST http://localhost:8080/v1/credits/topups \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -H 'idempotency-key: customer-42-credit-topup-0001' \
+  -d '{"customerId":"CUSTOMER_UUID","amount":"1.00"}'
+
+# Spend 25 internal credits; this never creates or transfers a USDC payment.
+curl -X POST http://localhost:8080/v1/credits/deductions \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -H 'idempotency-key: ai-request-0001' \
+  -d '{"customerId":"CUSTOMER_UUID","amount":"25.00","reference":"request-0001","metadata":{"request_id":"request-0001"}}'
+```
 
 ## Architecture
 
-`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; `src/services/webhook-delivery-worker.ts` handles expiry and asynchronous signed delivery. `src/webhooks/` contains secret encryption, signatures and transactional outbox helpers. `src/modules/` keeps merchant, customer, order, payment, payment-link, checkout, webhook, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
+`src/payment-adapter.ts` defines the chain boundary without coupling order/payment records to a chain SDK. `src/adapters/usdc/` contains the Base USDC implementation; `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; `src/services/credit-engine.ts` owns internal balances and atomic deductions; `src/services/webhook-delivery-worker.ts` handles expiry and asynchronous signed delivery. `src/webhooks/` contains secret encryption, signatures and transactional outbox helpers. `src/modules/` keeps merchant, customer, order, payment, payment-link, checkout, webhook, credit, API-key and ledger routes separate; `src/app.ts` only composes them. PostgreSQL schema is versioned under `migrations/`.
 
 ## Development checks
 

@@ -6,13 +6,15 @@ import { BaseUsdcAdapter } from './adapters/usdc/base-usdc-adapter.js';
 import { PaymentVerificationService } from './services/payment-verification-service.js';
 import { UsdcPaymentDetector } from './services/usdc-payment-detector.js';
 import { WebhookDeliveryWorker } from './services/webhook-delivery-worker.js';
+import { CreditEngine } from './services/credit-engine.js';
 
 const db = new PostgresDatabase();
 const paymentAdapter = new BaseUsdcAdapter();
 const verification = new PaymentVerificationService(db, [paymentAdapter]);
 const detector = new UsdcPaymentDetector(db, paymentAdapter, verification);
-const webhookWorker = new WebhookDeliveryWorker(db);
-const app = await buildApp({ db, migrate: () => db.migrate(), paymentAdapter, verification });
+const credits = new CreditEngine(db);
+const webhookWorker = new WebhookDeliveryWorker(db, fetch, [credits]);
+const app = await buildApp({ db, migrate: () => db.migrate(), paymentAdapter, verification, creditEngine: credits });
 let detectorTimer: NodeJS.Timeout | undefined;
 let webhookTimer: NodeJS.Timeout | undefined;
 

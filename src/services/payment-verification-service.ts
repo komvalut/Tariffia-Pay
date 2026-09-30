@@ -4,6 +4,7 @@ import type { PaymentAdapter, PaymentVerificationResult } from '../payment-adapt
 import { newId } from '../security.js';
 import { enqueueWebhookEvent } from '../webhooks/outbox.js';
 import type { PoolClient } from 'pg';
+import type { PaymentLifecycleHandler } from './payment-lifecycle.js';
 
 type PaymentRecord = {
   id: string;
@@ -33,9 +34,15 @@ export type PaymentProcessingResult = {
 
 export class PaymentVerificationService {
   private readonly adapters: Map<string, PaymentAdapter>;
+  private readonly lifecycleHandlers: PaymentLifecycleHandler[];
 
-  constructor(private readonly db: Database, adapters: PaymentAdapter[]) {
+  constructor(private readonly db: Database, adapters: PaymentAdapter[], lifecycleHandlers: PaymentLifecycleHandler[] = []) {
     this.adapters = new Map(adapters.map((adapter) => [adapter.id, adapter]));
+    this.lifecycleHandlers = [...lifecycleHandlers];
+  }
+
+  addLifecycleHandler(handler: PaymentLifecycleHandler): void {
+    if (!this.lifecycleHandlers.includes(handler)) this.lifecycleHandlers.push(handler);
   }
 
   async processPublic(paymentId: string, transactionHash: string): Promise<PaymentProcessingResult> {
@@ -233,6 +240,13 @@ export class PaymentVerificationService {
           reason: failure.reason, status: 'FAILED',
         },
       });
+      for (const handler of this.lifecycleHandlers) {
+        await handler.onPaymentFailed?.(client, {
+          paymentId: payment.id, merchantId: payment.merchant_id, orderId: payment.order_id,
+          amount: payment.amount, currency: payment.currency, network: payment.network,
+          transactionHash, reason: failure.reason,
+        });
+      }
       return false;
     });
   }
@@ -309,6 +323,12 @@ export class PaymentVerificationService {
           currency: payment.currency, transactionHash, status: 'PAID',
         },
       });
+      for (const handler of this.lifecycleHandlers) {
+        await handler.onPaymentConfirmed?.(client, {
+          paymentId: payment.id, merchantId: payment.merchant_id, orderId: payment.order_id,
+          amount: payment.amount, currency: payment.currency, network: payment.network, transactionHash,
+        });
+      }
       return false;
     });
   }

@@ -40,7 +40,14 @@ describe('Tariffia merchant and payment API', () => {
     } else {
       await pool.query(phaseTwoMigration);
     }
-    await pool.query(await readFile(path.join(migrationsDir, '0003_webhooks.sql'), 'utf8'));
+    let webhookMigration = await readFile(path.join(migrationsDir, '0003_webhooks.sql'), 'utf8');
+    // pg-mem autogenerates a different inline check name, so let migration 0004 replace the event whitelist.
+    webhookMigration = webhookMigration.replace(
+      /event_type text NOT NULL CHECK \(event_type IN \([\s\S]*?\)\),/,
+      'event_type text NOT NULL,',
+    );
+    await pool.query(webhookMigration);
+    await pool.query(await readFile(path.join(migrationsDir, '0004_credit_engine.sql'), 'utf8'));
 
     db = {
       query: (text, values = []) => pool.query(text, values),
@@ -754,6 +761,191 @@ describe('Tariffia merchant and payment API', () => {
     expect(entryTypes).toContain('PAYMENT_DETECTED');
     expect(entryTypes).toContain('PAYMENT_FAILED');
     expect(entryTypes).toContain('PAYMENT_EXPIRED');
+  });
+
+  it('converts a confirmed USDC top-up into separate credit and main-ledger records', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Credit Store', email: 'credit@example.com', walletAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'credit-customer-1', email: 'credit-customer@example.com' },
+    });
+    const customerId = customer.json().customer.id as string;
+    const balanceBefore = await app.inject({
+      method: 'GET', url: `/v1/credits/${customerId}/balance`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(balanceBefore.json().balance).toBe('0');
+
+    const topup = await app.inject({
+      method: 'POST', url: '/v1/credits/topups',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'credit-topup-order-001' },
+      payload: { customerId, amount: '1.50' },
+    });
+    expect(topup.statusCode).toBe(201);
+    expect(topup.json().creditTopup).toMatchObject({ amountUsdc: '1.50', creditAmount: '150', status: 'PENDING' });
+    const replay = await app.inject({
+      method: 'POST', url: '/v1/credits/topups',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'credit-topup-order-001' },
+      payload: { customerId, amount: '1.50' },
+    });
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.json().payment.id).toBe(topup.json().payment.id);
+
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 1234567n };
+    const paymentConfirmation = await app.inject({
+      method: 'POST', url: `/v1/payments/${topup.json().payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { transactionHash: `0x${'7'.repeat(64)}` },
+    });
+    expect(paymentConfirmation.statusCode).toBe(200);
+
+    const balanceAfter = await app.inject({
+      method: 'GET', url: `/v1/credits/${customerId}/balance`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(Number(balanceAfter.json().balance)).toBe(150);
+    const topups = await app.inject({
+      method: 'GET', url: `/v1/credits/${customerId}/topups`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(topups.json().topups).toHaveLength(1);
+    expect(topups.json().topups[0].status).toBe('CREDITED');
+
+    const ledger = await app.inject({ method: 'GET', url: '/v1/ledger', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(ledger.json().entries.find((entry: { entryType: string }) => entry.entryType === 'PAYMENT_CONFIRMED')?.currency).toBe('USDC');
+    const creditLedger = ledger.json().entries.find((entry: { entryType: string }) => entry.entryType === 'CREDIT_TOPUP');
+    expect(creditLedger.currency).toBe('CREDITS');
+    expect(Number(creditLedger.amount)).toBe(150);
+
+    const adminAccounts = await app.inject({
+      method: 'GET', url: '/v1/admin/credits/accounts',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(adminAccounts.statusCode).toBe(200);
+    expect(Number(adminAccounts.json().accounts[0].balance)).toBe(150);
+    const adminTransactions = await app.inject({
+      method: 'GET', url: '/v1/admin/credits/transactions?type=TOPUP',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(adminTransactions.json().transactions).toHaveLength(1);
+    expect(adminTransactions.json().transactions[0].currency).toBe('CREDITS');
+    const webhookEvents = await db.query<{ event_type: string }>(
+      'SELECT event_type FROM webhook_events WHERE merchant_id = $1', [merchant.json().merchant.id],
+    );
+    expect(webhookEvents.rows.map((event) => event.event_type)).toContain('credit.topup');
+  });
+
+  it('deducts credits atomically under concurrent requests and never allows a negative balance', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Atomic Credit Store', email: 'atomic-credit@example.com', walletAddress: '0xffffffffffffffffffffffffffffffffffffffff' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'atomic-credit-customer' },
+    });
+    const customerId = customer.json().customer.id as string;
+    const topup = await app.inject({
+      method: 'POST', url: '/v1/credits/topups',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'atomic-credit-topup-01' },
+      payload: { customerId, amount: '1.00' },
+    });
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 1234568n };
+    await app.inject({
+      method: 'POST', url: `/v1/payments/${topup.json().payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionHash: `0x${'8'.repeat(64)}` },
+    });
+
+    const deduct = (key: string) => app.inject({
+      method: 'POST', url: '/v1/credits/deductions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': key },
+      payload: { customerId, amount: '70.00', reference: key, metadata: { purpose: 'concurrent-test' } },
+    });
+    const results = await Promise.all([
+      deduct('credit-deduction-001').then((response) => ({ key: 'credit-deduction-001', response })),
+      deduct('credit-deduction-002').then((response) => ({ key: 'credit-deduction-002', response })),
+    ]);
+    expect(results.map(({ response }) => response.statusCode).sort()).toEqual([201, 409]);
+    const winner = results.find(({ response }) => response.statusCode === 201)!;
+    const replay = await deduct(winner.key);
+    expect(replay.statusCode).toBe(201);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+
+    const balance = await app.inject({
+      method: 'GET', url: `/v1/credits/${customerId}/balance`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(Number(balance.json().balance)).toBe(30);
+    const usage = await app.inject({
+      method: 'GET', url: `/v1/credits/${customerId}/usage`, headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(usage.json().usage).toHaveLength(1);
+    expect(Number(usage.json().usage[0].amount)).toBe(70);
+    const ledger = await app.inject({ method: 'GET', url: '/v1/ledger', headers: { authorization: `Bearer ${apiKey}` } });
+    const deductionLedger = ledger.json().entries.find((entry: { entryType: string }) => entry.entryType === 'CREDIT_DEDUCTION');
+    expect(deductionLedger.currency).toBe('CREDITS');
+    expect(Number(deductionLedger.amount)).toBe(70);
+    const webhookEvents = await db.query<{ event_type: string }>(
+      'SELECT event_type FROM webhook_events WHERE merchant_id = $1', [merchant.json().merchant.id],
+    );
+    expect(webhookEvents.rows.map((event) => event.event_type)).toContain('credit.deducted');
+  });
+
+  it('exposes and updates credit conversion and top-up settings through the admin API', async () => {
+    const initial = await app.inject({
+      method: 'GET', url: '/v1/admin/credits/settings',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(initial.json().settings.creditsPerUsdcRate).toBe(100);
+    expect(Number(initial.json().settings.minimumTopupUsdc)).toBe(1);
+    expect(Number(initial.json().settings.maximumTopupUsdc)).toBe(1000);
+    const updated = await app.inject({
+      method: 'PUT', url: '/v1/admin/credits/settings',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { creditsPerUsdcRate: 250, minimumTopupUsdc: '2.00', maximumTopupUsdc: '500.00' },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().settings.creditsPerUsdcRate).toBe(250);
+    expect(Number(updated.json().settings.minimumTopupUsdc)).toBe(2);
+    expect(Number(updated.json().settings.maximumTopupUsdc)).toBe(500);
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Configured Credit Store', email: 'configured-credit@example.com', walletAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'configured-credit-customer' },
+    });
+    const belowMin = await app.inject({
+      method: 'POST', url: '/v1/credits/topups',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'configured-credit-topup-01' },
+      payload: { customerId: customer.json().customer.id, amount: '1.00' },
+    });
+    expect(belowMin.statusCode).toBe(400);
+    const aboveMax = await app.inject({
+      method: 'POST', url: '/v1/credits/topups',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'configured-credit-topup-over-max' },
+      payload: { customerId: customer.json().customer.id, amount: '500.01' },
+    });
+    expect(aboveMax.statusCode).toBe(400);
+    const configuredTopup = await app.inject({
+      method: 'POST', url: '/v1/credits/topups',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'configured-credit-topup-02' },
+      payload: { customerId: customer.json().customer.id, amount: '2.00' },
+    });
+    expect(configuredTopup.statusCode).toBe(201);
+    expect(configuredTopup.json().creditTopup.creditAmount).toBe('500');
+    const invalid = await app.inject({
+      method: 'PUT', url: '/v1/admin/credits/settings',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { creditsPerUsdcRate: 250, minimumTopupUsdc: '10.00', maximumTopupUsdc: '2.00' },
+    });
+    expect(invalid.statusCode).toBe(400);
   });
 
   function verificationServiceForTest(): PaymentVerificationService {

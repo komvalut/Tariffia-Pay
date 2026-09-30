@@ -5,6 +5,7 @@ import { enqueueWebhookEvent } from '../webhooks/outbox.js';
 import { decryptWebhookSecret } from '../webhooks/secret-crypto.js';
 import { createWebhookSignature } from '../webhooks/signature.js';
 import { validateWebhookUrl } from '../webhooks/url.js';
+import type { PaymentLifecycleData, PaymentLifecycleHandler } from './payment-lifecycle.js';
 
 type DueDelivery = {
   id: string;
@@ -24,7 +25,11 @@ type Fetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
 export class WebhookDeliveryWorker {
   private running = false;
 
-  constructor(private readonly db: Database, private readonly fetcher: Fetcher = fetch) {}
+  constructor(
+    private readonly db: Database,
+    private readonly fetcher: Fetcher = fetch,
+    private readonly lifecycleHandlers: PaymentLifecycleHandler[] = [],
+  ) {}
 
   async runOnce(): Promise<{ duePayments: number; expiredPayments: number; claimedDeliveries: number }> {
     if (this.running) return { duePayments: 0, expiredPayments: 0, claimedDeliveries: 0 };
@@ -84,6 +89,11 @@ export class WebhookDeliveryWorker {
             currency: payment.currency, network: payment.network, status: 'EXPIRED',
           },
         });
+        const expiredPayment: PaymentLifecycleData = {
+          paymentId: payment.id, merchantId: payment.merchant_id, orderId: payment.order_id,
+          amount: payment.amount, currency: payment.currency, network: payment.network,
+        };
+        for (const handler of this.lifecycleHandlers) await handler.onPaymentExpired?.(client, expiredPayment);
         return true;
       });
       if (didExpire) expiredCount++;

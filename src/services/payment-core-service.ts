@@ -4,10 +4,11 @@ import { runIdempotently } from '../idempotency.js';
 import type { MerchantContext } from '../http.js';
 import type { AdapterPaymentDetails, PaymentAdapter } from '../payment-adapter.js';
 import type { CreateOrderInput } from '../schemas.js';
-import { newId } from '../security.js';
 import { checkoutQrUrlForPayment, checkoutUrlForPayment } from '../checkout-links.js';
 import { config } from '../config.js';
 import { enqueueWebhookEvent } from '../webhooks/outbox.js';
+import { hashRequest, newId } from '../security.js';
+import type { PoolClient } from 'pg';
 
 export class PaymentCoreService {
   constructor(private readonly db: Database, private readonly adapter: PaymentAdapter) {}
@@ -17,6 +18,9 @@ export class PaymentCoreService {
     body: CreateOrderInput;
     idempotencyKey: string;
     scope: string;
+    onPaymentCreated?: (client: PoolClient, payment: {
+      paymentId: string; orderId: string; merchantId: string; amount: string; currency: string; network: string;
+    }) => Promise<{ response?: Record<string, unknown>; webhookData?: Record<string, unknown> } | void>;
   }) {
     return runIdempotently({
       db: this.db,
@@ -34,6 +38,7 @@ export class PaymentCoreService {
 
         const orderId = newId();
         const paymentId = newId();
+        const paymentIdempotencyKey = hashRequest({ scope: input.scope, key: input.idempotencyKey });
         const expiresAt = new Date(Date.now() + config.PAYMENT_EXPIRATION_MINUTES * 60_000);
         let adapterDetails: AdapterPaymentDetails;
         try {
@@ -70,7 +75,7 @@ export class PaymentCoreService {
             paymentId, input.merchant.id, orderId, input.body.amount, adapterDetails.adapterData.amountBaseUnits,
             adapterDetails.currency, adapterDetails.adapter, adapterDetails.network,
             adapterDetails.recipientAddress.toLowerCase(), adapterDetails.tokenAddress.toLowerCase(),
-            JSON.stringify(adapterDetails.adapterData), input.idempotencyKey, expiresAt,
+            JSON.stringify(adapterDetails.adapterData), paymentIdempotencyKey, expiresAt,
           ],
         );
         await client.query(
@@ -78,6 +83,10 @@ export class PaymentCoreService {
            VALUES ($1, $2, $3, $4, 'PAYMENT_CREATED', $5, 'USDC', $6, $7::jsonb)`,
           [newId(), input.merchant.id, orderId, paymentId, input.body.amount, paymentId, JSON.stringify({ status: 'PENDING' })],
         );
+        const extension = await input.onPaymentCreated?.(client, {
+          paymentId, orderId, merchantId: input.merchant.id, amount: input.body.amount,
+          currency: adapterDetails.currency, network: adapterDetails.network,
+        });
         await enqueueWebhookEvent({
           client,
           merchantId: input.merchant.id,
@@ -91,6 +100,7 @@ export class PaymentCoreService {
             network: adapterDetails.network,
             recipientAddress: adapterDetails.recipientAddress.toLowerCase(),
             status: 'PENDING', expiresAt: expiresAt.toISOString(),
+            ...extension?.webhookData,
           },
         });
 
@@ -98,7 +108,7 @@ export class PaymentCoreService {
         const qrUrl = checkoutQrUrlForPayment(paymentId);
         return {
           status: 201,
-          body: { order: order.rows[0], payment: payment.rows[0], checkoutUrl, qrUrl },
+          body: { order: order.rows[0], payment: payment.rows[0], checkoutUrl, qrUrl, ...extension?.response },
         };
       },
     });

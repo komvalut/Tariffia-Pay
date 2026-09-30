@@ -47,6 +47,8 @@ export const webhookEventTypes = [
   'payment.failed',
   'payment.expired',
   'order.paid',
+  'credit.topup',
+  'credit.deducted',
 ] as const;
 export type WebhookEventType = typeof webhookEventTypes[number];
 
@@ -71,4 +73,26 @@ export const updateWebhookSchema = z.object({
   enabled: z.boolean().optional(),
 }).refine((input) => Object.values(input).some((value) => value !== undefined), {
   message: 'At least one endpoint field must be provided',
+});
+
+const positiveDecimal = z.string()
+  .regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/, 'Amount must be a decimal with up to 30 integer and 6 fractional places')
+  .refine((value) => !/^0(?:\.0+)?$/.test(value), 'Amount must be greater than zero');
+
+export const createCreditTopupSchema = z.object({
+  customerId: z.string().uuid(),
+  amount: positiveDecimal,
+});
+
+export const createCreditDeductionSchema = z.object({
+  customerId: z.string().uuid(),
+  amount: positiveDecimal,
+  reference: z.string().trim().min(1).max(128).optional(),
+  metadata: z.record(z.unknown()).default({}),
+});
+
+export const updateCreditSettingsSchema = z.object({
+  creditsPerUsdcRate: z.number().int().min(1).max(1_000_000),
+  minimumTopupUsdc: positiveDecimal,
+  maximumTopupUsdc: positiveDecimal,
 });

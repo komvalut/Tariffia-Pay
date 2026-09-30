@@ -16,20 +16,27 @@ import { orderRoutes } from './modules/orders.js';
 import { paymentLinkRoutes } from './modules/payment-links.js';
 import { paymentRoutes } from './modules/payments.js';
 import { webhookRoutes } from './modules/webhooks.js';
+import { creditRoutes } from './modules/credits.js';
+import { adminCreditRoutes } from './modules/admin-credits.js';
 import { PaymentCoreService } from './services/payment-core-service.js';
+import { CreditEngine } from './services/credit-engine.js';
 
 type AppOptions = {
   db: Database;
   migrate?: () => Promise<void>;
   paymentAdapter?: PaymentAdapter;
   verification?: PaymentVerificationService;
+  creditEngine?: CreditEngine;
 };
 
-export async function buildApp({ db, migrate, paymentAdapter, verification }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ db, migrate, paymentAdapter, verification, creditEngine }: AppOptions): Promise<FastifyInstance> {
   if (migrate) await migrate();
   const adapter = paymentAdapter ?? new BaseUsdcAdapter();
   const paymentVerification = verification ?? new PaymentVerificationService(db, [adapter]);
   const paymentCore = new PaymentCoreService(db, adapter);
+  const credits = creditEngine ?? new CreditEngine(db);
+  await credits.initialize();
+  paymentVerification.addLifecycleHandler(credits);
   const app = Fastify({ logger: true, bodyLimit: 256 * 1024 });
   await app.register(sensible);
   await app.register(rateLimit, { global: false });
@@ -61,6 +68,8 @@ export async function buildApp({ db, migrate, paymentAdapter, verification }: Ap
   await app.register(checkoutRoutes, { db, verification: paymentVerification });
   await app.register(webhookRoutes, { db });
   await app.register(adminWebhookRoutes, { db });
+  await app.register(creditRoutes, { db, credits, paymentCore });
+  await app.register(adminCreditRoutes, { db, credits });
   await app.register(ledgerRoutes, { db });
   return app;
 }

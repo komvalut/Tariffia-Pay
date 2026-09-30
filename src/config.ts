@@ -19,6 +19,9 @@ const schema = z.object({
   WEBHOOK_WORKER_INTERVAL_MS: z.coerce.number().int().min(1000).default(3000),
   WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(8),
   WEBHOOK_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(10_000),
+  CREDITS_PER_USDC_RATE: z.coerce.number().int().min(1).max(1_000_000).default(100),
+  CREDIT_MINIMUM_TOPUP_USDC: z.string().regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/).default('1.000000'),
+  CREDIT_MAXIMUM_TOPUP_USDC: z.string().regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/).default('1000.000000'),
 });
 
 const parsed = schema.safeParse(process.env);
