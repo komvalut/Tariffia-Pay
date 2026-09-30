@@ -42,8 +42,8 @@ describe('Lightning payment adapter foundation', () => {
     expect(summary).toMatchObject({
       name: 'Bitcoin Lightning', isDefault: false, status: 'disabled', lifecycle: 'ready',
       capabilities: {
-        paymentRequests: true, transactionVerification: true, automaticDetection: false,
-        refunds: false, currencies: ['SAT'],
+        paymentRequests: true, transactionVerification: true, statusPolling: true, automaticDetection: false,
+        refunds: false, paymentRequestFormat: 'invoice', currencies: ['SAT'],
       },
     });
     expect(summary?.capabilities.networks).toEqual([

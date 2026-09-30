@@ -68,6 +68,10 @@
     .feedback.visible { display: block; }
     .feedback.error { color: var(--danger); border-color: rgba(255, 177, 168, .3); }
     .tx-link { display: block; margin-top: 5px; color: var(--blue); }
+    .invoice-panel { margin-top: 20px; padding: 15px; border: 1px solid rgba(164, 199, 255, .28); border-radius: 14px; background: rgba(0, 0, 0, .16); }
+    .invoice-label { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
+    .invoice-text { max-height: 132px; margin: 10px 0; overflow: auto; color: var(--text); font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
+    .invoice-help { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
     .side { padding: 22px; }
     .side h2 { margin: 2px 0 5px; font-size: 17px; letter-spacing: -.025em; }
     .side-intro { margin: 0 0 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -102,7 +106,7 @@
   <div class="shell">
     <header class="topbar">
       <div class="brand"><span class="brand-mark">T</span><span>tariffia<span style="color:var(--accent)"> pay</span></span></div>
-      <div class="secure" aria-label="Payment independently verified on Base">
+      <div id="secure-label" class="secure" aria-label="Payment status is verified by Tariffia">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 19 6v5c0 4.7-3 8.5-7 10-4-1.5-7-5.3-7-10V6l7-3Z" stroke="currentColor" stroke-width="1.7"/><path d="m9 12 2 2 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Self-custodial checkout
       </div>
@@ -112,7 +116,7 @@
     <main id="checkout" class="layout" hidden>
       <section class="card summary" aria-labelledby="checkout-title">
         <div class="eyebrow">Secure payment request</div>
-        <h1 id="checkout-title">Pay with USDC</h1>
+        <h1 id="checkout-title">Complete payment</h1>
         <p id="description" class="description"></p>
         <div class="amount-box"><span id="amount" class="amount"></span><span id="currency" class="currency">USDC</span></div>
 
@@ -123,34 +127,42 @@
         </div>
 
         <div class="details">
+          <div class="detail"><span class="detail-label">Payment method</span><span id="payment-method" class="detail-value"></span></div>
           <div class="detail"><span class="detail-label">Network</span><span id="network" class="detail-value">Base</span></div>
           <div class="detail"><span class="detail-label">Order</span><span id="order" class="detail-value"></span></div>
-          <div class="detail"><span class="detail-label">Recipient</span><span class="detail-value address-line"><span id="recipient"></span><button id="copy-recipient" class="copy-btn" type="button">Copy</button></span></div>
-          <div class="detail"><span class="detail-label">USDC token</span><span class="detail-value address-line"><span id="token"></span><button id="copy-token" class="copy-btn" type="button">Copy</button></span></div>
+          <div id="recipient-detail" class="detail"><span id="recipient-label" class="detail-label">Recipient</span><span class="detail-value address-line"><span id="recipient"></span><button id="copy-recipient" class="copy-btn" type="button">Copy</button></span></div>
+          <div id="token-detail" class="detail"><span class="detail-label">USDC token</span><span class="detail-value address-line"><span id="token"></span><button id="copy-token" class="copy-btn" type="button">Copy</button></span></div>
         </div>
+
+        <section id="invoice-panel" class="invoice-panel" aria-label="Lightning payment request" hidden>
+          <div class="invoice-label">Lightning invoice</div>
+          <pre id="invoice-text" class="invoice-text"></pre>
+          <button id="copy-invoice" class="copy-btn" type="button">Copy Lightning invoice</button>
+          <p class="invoice-help">Pay this invoice in a Lightning wallet. Tariffia checks settlement with the payment provider; this page never treats a browser report as proof.</p>
+        </section>
 
         <button id="pay-button" class="pay-btn" type="button">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v18m6-14.5C18 5.1 15.3 4 12 4S6 5 6 7.5 8.7 11 12 12s6 2 6 4.5S15.3 20 12 20s-6-1.1-6-2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           Pay USDC from wallet
         </button>
-        <p class="wallet-note">Your wallet signs and sends directly to the merchant. Tariffia never receives your keys or holds your funds.</p>
+        <p id="wallet-note" class="wallet-note">Your wallet signs and sends directly to the merchant. Tariffia never receives your keys or holds your funds.</p>
         <div id="feedback" class="feedback" role="status" aria-live="polite"></div>
       </section>
 
       <aside class="card side" aria-labelledby="qr-title">
         <h2 id="qr-title">Scan to open checkout</h2>
-        <p class="side-intro">Scan with your phone to open this exact payment request.</p>
+        <p id="qr-intro" class="side-intro">Scan with your phone to open this exact payment request.</p>
         <div class="qr-wrap"><img id="qr" class="qr" alt="QR code for this Tariffia payment link"><span id="qr-loading" class="qr-loading">Preparing QR</span></div>
-        <p class="scan-label">The QR opens this hosted checkout. Always review the merchant and amount in your wallet before signing.</p>
+        <p id="scan-label" class="scan-label">The QR opens this hosted checkout. Always review the merchant and amount in your wallet before signing.</p>
         <div class="divider">How it works</div>
         <ol class="steps">
-          <li class="step"><span class="step-number">01</span><span>Connect a Base-compatible wallet, or scan the QR to continue on your phone.</span></li>
-          <li class="step"><span class="step-number">02</span><span>Review the exact USDC amount and merchant recipient before approving.</span></li>
-          <li class="step"><span class="step-number">03</span><span>Tariffia verifies the on-chain transfer before marking this payment complete.</span></li>
+          <li class="step"><span class="step-number">01</span><span id="step-one">Connect a Base-compatible wallet, or scan the QR to continue on your phone.</span></li>
+          <li class="step"><span class="step-number">02</span><span id="step-two">Review the exact USDC amount and merchant recipient before approving.</span></li>
+          <li class="step"><span class="step-number">03</span><span id="step-three">Tariffia verifies the on-chain transfer before marking this payment complete.</span></li>
         </ol>
       </aside>
     </main>
-    <footer class="foot">Payments are sent directly to the merchant on Base.<br><strong>Payment confirmation is independently verified on-chain.</strong></footer>
+    <footer id="checkout-foot" class="foot">Payment is sent directly to the merchant on Base.<br><strong>Confirmation is independently verified on-chain.</strong></footer>
   </div>
 
   <script>
@@ -169,7 +181,7 @@
         feedback.replaceChildren();
         feedback.className = `feedback visible${isError ? ' error' : ''}`;
         feedback.append(document.createTextNode(message));
-        if (txHash) {
+        if (txHash && payment?.network === 'base') {
           const link = document.createElement('a');
           link.className = 'tx-link';
           link.href = `https://basescan.org/tx/${encodeURIComponent(txHash)}`;
@@ -195,7 +207,9 @@
         if (value === 'CONFIRMED') {
           payButton.disabled = true;
           payButton.textContent = 'Payment confirmed';
-          showMessage('Payment verified on Base. This order is now paid.', false, lastTransactionHash);
+          showMessage(payment?.network === 'base'
+            ? 'Payment verified on Base. This order is now paid.'
+            : 'Payment verified by the server. This order is now paid.', false, lastTransactionHash);
         }
         if (value === 'DETECTED' || (value === 'PENDING' && lastTransactionHash)) {
           payButton.disabled = true;
@@ -216,18 +230,56 @@
           }
           const result = await response.json();
           payment = result.payment;
-          lastTransactionHash = payment.txHash || lastTransactionHash;
+          lastTransactionHash = payment.txHash || payment.transactionId || lastTransactionHash;
+          const paymentMethod = payment.paymentMethod || {
+            id: payment.adapter || 'usdc',
+            name: payment.adapter === 'lightning' ? 'Bitcoin Lightning' : 'Base USDC',
+            paymentRequestFormat: payment.network === 'base' ? 'wallet' : 'invoice',
+          };
+          const usesInvoice = paymentMethod.paymentRequestFormat === 'invoice';
+          const paymentRequest = payment.paymentRequest || payment.recipientAddress;
+          document.getElementById('checkout-title').textContent = `Pay with ${paymentMethod.name}`;
+          document.getElementById('secure-label').setAttribute('aria-label', 'Payment status is verified by Tariffia');
+          document.getElementById('payment-method').textContent = paymentMethod.name;
           document.getElementById('description').textContent = payment.description;
           document.getElementById('amount').textContent = payment.amount;
           document.getElementById('currency').textContent = payment.currency;
           document.getElementById('merchant').textContent = payment.merchant;
           document.getElementById('merchant-icon').textContent = (payment.merchant || 'T').trim().slice(0, 1).toUpperCase();
           document.getElementById('order').textContent = payment.orderId;
-          document.getElementById('network').textContent = payment.network === 'base' ? 'Base' : payment.network;
-          document.getElementById('recipient').textContent = shortAddress(payment.recipientAddress);
-          document.getElementById('token').textContent = shortAddress(payment.tokenAddress);
-          document.getElementById('copy-recipient').onclick = () => navigator.clipboard.writeText(payment.recipientAddress).then(() => showMessage('Recipient address copied.'));
+          document.getElementById('network').textContent = payment.network === 'base' ? 'Base' : payment.network.replace(/^lightning-/, 'Lightning · ');
+          document.getElementById('recipient-detail').hidden = usesInvoice;
+          document.getElementById('token-detail').hidden = usesInvoice;
+          document.getElementById('recipient-label').textContent = usesInvoice ? 'Invoice' : 'Recipient';
+          document.getElementById('recipient').textContent = usesInvoice ? '' : shortAddress(payment.recipientAddress);
+          document.getElementById('token').textContent = payment.tokenAddress ? shortAddress(payment.tokenAddress) : '';
+          document.getElementById('copy-recipient').onclick = () => navigator.clipboard.writeText(payment.recipientAddress).then(() => showMessage('Recipient copied.'));
           document.getElementById('copy-token').onclick = () => navigator.clipboard.writeText(payment.tokenAddress).then(() => showMessage('USDC token address copied.'));
+          document.getElementById('invoice-panel').hidden = !usesInvoice;
+          document.getElementById('invoice-text').textContent = usesInvoice ? paymentRequest : '';
+          document.getElementById('copy-invoice').onclick = () => navigator.clipboard.writeText(paymentRequest).then(() => showMessage('Lightning invoice copied.'));
+          document.getElementById('pay-button').hidden = usesInvoice;
+          document.getElementById('wallet-note').hidden = usesInvoice;
+          document.getElementById('qr-title').textContent = usesInvoice ? 'Scan Lightning invoice' : 'Scan to open checkout';
+          document.getElementById('qr-intro').textContent = usesInvoice
+            ? 'Scan with a Lightning wallet to pay this invoice.'
+            : 'Scan with your phone to open this exact payment request.';
+          document.getElementById('qr').alt = usesInvoice ? 'QR code for the Lightning invoice' : 'QR code for this Tariffia payment link';
+          document.getElementById('scan-label').textContent = usesInvoice
+            ? 'Review the amount and invoice expiry in your Lightning wallet before paying.'
+            : 'The QR opens this hosted checkout. Always review the merchant and amount in your wallet before signing.';
+          document.getElementById('step-one').textContent = usesInvoice
+            ? 'Open a Lightning wallet and scan the invoice QR, or copy the invoice above.'
+            : 'Connect a Base-compatible wallet, or scan the QR to continue on your phone.';
+          document.getElementById('step-two').textContent = usesInvoice
+            ? 'Review the SAT amount and invoice expiry in your wallet.'
+            : 'Review the exact USDC amount and merchant recipient before approving.';
+          document.getElementById('step-three').textContent = usesInvoice
+            ? 'Tariffia checks settlement with the configured Lightning provider.'
+            : 'Tariffia verifies the on-chain transfer before marking this payment complete.';
+          document.getElementById('checkout-foot').innerHTML = usesInvoice
+            ? 'Pay the invoice using a Lightning wallet.<br><strong>Payment status is verified server-side.</strong>'
+            : 'Payment is sent directly to the merchant on Base.<br><strong>Confirmation is independently verified on-chain.</strong>';
           document.getElementById('qr').src = `/p/${encodeURIComponent(paymentId)}/qr.png`;
           document.getElementById('qr').onload = () => { document.getElementById('qr-loading').hidden = true; };
           setPaymentStatus(payment.status);

@@ -24,6 +24,26 @@ function fakeFetch(responses: Response[]) {
 }
 
 describe('Tariffia TypeScript SDK', () => {
+  it('discovers enabled checkout methods and selects one when creating an order', async () => {
+    const { calls, fetcher } = fakeFetch([
+      jsonResponse({ methods: [{
+        id: 'lightning', name: 'Bitcoin Lightning', description: 'Lightning invoice payments',
+        capabilities: { paymentRequests: true, transactionVerification: true, statusPolling: true,
+          automaticDetection: false, refunds: false, paymentRequestFormat: 'invoice',
+          currencies: ['SAT'], networks: ['lightning-mainnet'] },
+      }] }),
+      jsonResponse({ order: { id: 'order-1' }, payment: { id: 'pay-1', adapter: 'lightning' }, checkoutUrl: '/p/pay-1', qrUrl: '/p/pay-1/qr.png' }, 201),
+    ]);
+    const client = new TariffiaClient({ apiKey: 'merchant-secret', fetch: fetcher });
+    const methods = await client.getPaymentMethods();
+    expect(methods.methods.map((method) => method.id)).toEqual(['lightning']);
+    await client.createOrder(
+      { description: 'SAT checkout', amount: '25', currency: 'SAT', adapter: methods.methods[0]!.id },
+      { idempotencyKey: 'lightning-sdk-order-1' },
+    );
+    expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ currency: 'SAT', adapter: 'lightning' });
+  });
+
   it('authenticates with the merchant key and forwards idempotency keys for order/payment-link/top-up requests', async () => {
     const { calls, fetcher } = fakeFetch([
       jsonResponse({ checkoutUrl: 'https://pay.example/p/pay-1', order: { id: 'order-1' }, payment: { id: 'pay-1' } }, 201),

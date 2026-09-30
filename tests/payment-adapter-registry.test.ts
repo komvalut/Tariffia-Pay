@@ -19,8 +19,10 @@ const manifest: PaymentAdapterManifest = {
   capabilities: {
     paymentRequests: true,
     transactionVerification: true,
+    statusPolling: false,
     automaticDetection: false,
     refunds: false,
+    paymentRequestFormat: 'wallet',
     currencies: ['USDC'],
     networks: ['sample-net'],
   },

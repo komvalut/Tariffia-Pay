@@ -26,7 +26,7 @@ Payment creation receives a server-generated stable `idempotencyKey`, derived fr
 4. Add adapter tests for configuration, request details, receipt normalization, health, errors, and stable idempotency. Add integration tests for selection and the disabled state.
 5. Build and run the existing checks. Inspect `GET /v1/admin/payment-adapters` with the admin key to confirm the manifest and health summary; no adapter settings are returned.
 
-Merchants may select an installed method on order/payment-link creation with the optional `adapter` field. Omitting it selects the configured default. Unknown or disabled methods cannot create new payments. Disabling a method does not remove its registration: existing payments remain readable, and verification of existing non-terminal payments can continue while the adapter is installed and initialized.
+`GET /v1/public/payment-methods` returns only enabled, healthy methods suitable for checkout. Select one on order/payment-link creation with the optional `adapter` field; omitting it selects the configured default. The hosted checkout renders the chosen method's presentation (wallet transfer or invoice) and does not switch an already-created payment to a second rail. Unknown or disabled methods cannot create new payments. Disabling a method does not remove its registration: existing payments remain readable, and verification of existing non-terminal payments can continue while the adapter is installed and initialized.
 
 ## Base USDC
 

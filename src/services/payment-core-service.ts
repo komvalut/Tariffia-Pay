@@ -111,6 +111,7 @@ export class PaymentCoreService {
           data: {
             paymentId,
             orderId,
+            adapter: adapterDetails.adapter,
             amount: input.body.amount,
             currency: adapterDetails.currency,
             network: adapterDetails.network,
@@ -122,9 +123,27 @@ export class PaymentCoreService {
 
         const checkoutUrl = checkoutUrlForPayment(paymentId);
         const qrUrl = checkoutQrUrlForPayment(paymentId);
+        const manifest = this.adapters.getManifest(adapterDetails.adapter);
+        const paymentMethod = manifest ? {
+          id: manifest.id,
+          name: manifest.name,
+          paymentRequestFormat: manifest.capabilities.paymentRequestFormat,
+        } : undefined;
         return {
           status: 201,
-          body: { order: order.rows[0], payment: payment.rows[0], checkoutUrl, qrUrl, ...extension?.response },
+          body: {
+            order: order.rows[0],
+            payment: {
+              ...payment.rows[0],
+              ...(paymentMethod ? { paymentMethod } : {}),
+              ...(paymentMethod?.paymentRequestFormat === 'invoice'
+                ? { paymentRequest: adapterDetails.recipientAddress }
+                : {}),
+            },
+            checkoutUrl,
+            qrUrl,
+            ...extension?.response,
+          },
         };
       },
     });

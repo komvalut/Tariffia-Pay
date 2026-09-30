@@ -46,8 +46,10 @@ const manifest: PaymentAdapterManifest = {
   capabilities: {
     paymentRequests: true,
     transactionVerification: true,
+    statusPolling: true,
     automaticDetection: false,
     refunds: false,
+    paymentRequestFormat: 'invoice',
     currencies: ['SAT'],
     networks: ['lightning-mainnet', 'lightning-testnet', 'lightning-signet'],
   },
@@ -216,6 +218,16 @@ export class LightningAdapter implements PaymentAdapter {
         blockNumber: null,
       },
     };
+  }
+
+  async pollPaymentStatus(input: Omit<PaymentVerificationInput, 'transactionId'>) {
+    const paymentHash = input.adapterData.paymentHash;
+    if (typeof paymentHash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(paymentHash)) {
+      throw new PaymentAdapterError('invalid_response', 'verify_transaction', 'Stored Lightning invoice identifier is invalid');
+    }
+    const transactionId = this.normalizeTransactionId(paymentHash);
+    const result = await this.verifyTransaction({ ...input, transactionId });
+    return { transactionId, result };
   }
 
   private pendingReceipt(input: PaymentVerificationInput): PaymentVerificationResult {

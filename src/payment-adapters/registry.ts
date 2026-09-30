@@ -5,6 +5,7 @@ import type {
   PaymentAdapterHealth,
   PaymentAdapterManifest,
   PaymentRequest,
+  PaymentStatusPollResult,
   PaymentVerificationInput,
   PaymentVerificationResult,
 } from '../payment-adapter.js';
@@ -92,6 +93,10 @@ export class PaymentAdapterRegistry {
     return entry.adapter;
   }
 
+  getManifest(id: string): PaymentAdapterManifest | undefined {
+    return this.entries.get(id)?.adapter.manifest;
+  }
+
   normalizeTransactionId(id: string, transactionId: string): string {
     const adapter = this.getForVerification(id);
     try {
@@ -136,19 +141,27 @@ export class PaymentAdapterRegistry {
     }
     try {
       const result = await adapter.verifyTransaction(input);
-      if (result.state !== 'not_found' && result.state !== 'rejected') {
-        const receipt = result.receipt;
-        if (receipt.transactionId !== input.transactionId || receipt.network !== input.network ||
-            receipt.amount !== input.amount || receipt.currency !== input.currency || receipt.recipient !== input.recipientAddress ||
-            !Number.isInteger(receipt.confirmations) || receipt.confirmations < 0 ||
-            (receipt.blockNumber !== null && !/^[0-9]+$/.test(receipt.blockNumber)) ||
-            (result.state === 'verified' && receipt.state !== 'confirmed') ||
-            (result.state === 'failed' && receipt.state !== 'failed') ||
-            (result.state === 'pending' && receipt.state !== 'pending')) {
-          throw new PaymentAdapterError('invalid_response', 'verify_transaction', 'Payment adapter returned an invalid transaction receipt');
-        }
+      return this.validateVerificationResult(input, result);
+    } catch (error) {
+      throw normalizeAdapterError(error, 'verify_transaction');
+    }
+  }
+
+  async pollPaymentStatus(
+    id: string,
+    input: Omit<PaymentVerificationInput, 'transactionId'>,
+  ): Promise<PaymentStatusPollResult | null> {
+    const adapter = this.getForVerification(id);
+    if (!adapter.manifest.capabilities.statusPolling || !adapter.pollPaymentStatus) return null;
+    try {
+      const polled = await adapter.pollPaymentStatus(input);
+      if (!polled) return null;
+      const transactionId = adapter.normalizeTransactionId(polled.transactionId);
+      if (!transactionId || transactionId.length > 512) {
+        throw new PaymentAdapterError('invalid_response', 'verify_transaction', 'Adapter returned an invalid polling transaction ID');
       }
-      return result;
+      const normalizedInput = { ...input, transactionId };
+      return { transactionId, result: this.validateVerificationResult(normalizedInput, polled.result) };
     } catch (error) {
       throw normalizeAdapterError(error, 'verify_transaction');
     }
@@ -178,10 +191,47 @@ export class PaymentAdapterRegistry {
     }));
   }
 
+  async availableForCheckout(): Promise<Array<Pick<PaymentAdapterSummary,
+    'id' | 'name' | 'description' | 'capabilities'>>> {
+    const entries = [...this.entries.values()].filter((entry) =>
+      entry.configuration.enabled && entry.lifecycle === 'ready' && entry.adapter.manifest.capabilities.paymentRequests);
+    const available = await Promise.all(entries.map(async (entry) => {
+      try {
+        return (await entry.adapter.health()).status === 'healthy';
+      } catch {
+        return false;
+      }
+    }));
+    return entries.flatMap((entry, index) => available[index]
+      ? [{
+          id: entry.adapter.manifest.id,
+          name: entry.adapter.manifest.name,
+          description: entry.adapter.manifest.description,
+          capabilities: entry.adapter.manifest.capabilities,
+        }]
+      : []);
+  }
+
   private getEntry(id: string): AdapterEntry {
     const entry = this.entries.get(id);
     if (!entry) throw new PaymentAdapterError('unavailable', 'verify_transaction', `Payment adapter '${id}' is not installed`);
     return entry;
+  }
+
+  private validateVerificationResult(input: PaymentVerificationInput, result: PaymentVerificationResult): PaymentVerificationResult {
+    if (result.state !== 'not_found' && result.state !== 'rejected') {
+      const receipt = result.receipt;
+      if (receipt.transactionId !== input.transactionId || receipt.network !== input.network ||
+          receipt.amount !== input.amount || receipt.currency !== input.currency || receipt.recipient !== input.recipientAddress ||
+          !Number.isInteger(receipt.confirmations) || receipt.confirmations < 0 ||
+          (receipt.blockNumber !== null && !/^[0-9]+$/.test(receipt.blockNumber)) ||
+          (result.state === 'verified' && receipt.state !== 'confirmed') ||
+          (result.state === 'failed' && receipt.state !== 'failed') ||
+          (result.state === 'pending' && receipt.state !== 'pending')) {
+        throw new PaymentAdapterError('invalid_response', 'verify_transaction', 'Payment adapter returned an invalid transaction receipt');
+      }
+    }
+    return result;
   }
 
   private validateRegistration(adapter: PaymentAdapter, configuration: PaymentAdapterConfiguration): void {
@@ -194,8 +244,9 @@ export class PaymentAdapterRegistry {
         !manifest.name.trim() || !manifest.version.trim() || !manifest.description.trim() ||
         typeof adapter.normalizeTransactionId !== 'function' ||
         !capabilities ||
-        ['paymentRequests', 'transactionVerification', 'automaticDetection', 'refunds']
+        ['paymentRequests', 'transactionVerification', 'statusPolling', 'automaticDetection', 'refunds']
           .some((key) => typeof capabilities[key as keyof typeof capabilities] !== 'boolean') ||
+        !['wallet', 'invoice'].includes(capabilities.paymentRequestFormat) ||
         !Array.isArray(capabilities.currencies) || capabilities.currencies.length === 0 ||
         !capabilities.currencies.every((item) => typeof item === 'string' && /^[A-Z][A-Z0-9]{2,11}$/.test(item)) ||
         !Array.isArray(capabilities.networks) || capabilities.networks.length === 0 ||

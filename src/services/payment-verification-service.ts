@@ -56,7 +56,44 @@ export class PaymentVerificationService {
     return this.process(paymentId, payment.merchant_id, transactionId);
   }
 
-  async process(paymentId: string, merchantId: string, transactionId: string): Promise<PaymentProcessingResult> {
+  async pollPublic(paymentId: string): Promise<void> {
+    const result = await this.db.query<PaymentRecord>(
+      `SELECT id, merchant_id, order_id, amount::text AS amount, amount_base_units::text AS amount_base_units,
+              currency, adapter, network, recipient_address, token_address, adapter_data, status, tx_hash, created_at
+         FROM payments WHERE id = $1`,
+      [paymentId],
+    );
+    const payment = result.rows[0];
+    if (!payment) throw new HttpError(404, 'Payment not found', 'not_found');
+    if (!['PENDING', 'DETECTED'].includes(payment.status)) return;
+
+    let polled: Awaited<ReturnType<PaymentAdapterRegistry['pollPaymentStatus']>>;
+    try {
+      polled = await this.adapters.pollPaymentStatus(payment.adapter, {
+        paymentId: payment.id,
+        amount: payment.amount,
+        amountBaseUnits: payment.amount_base_units,
+        currency: payment.currency,
+        network: payment.network,
+        recipientAddress: payment.recipient_address,
+        tokenAddress: payment.token_address,
+        adapterData: payment.adapter_data,
+        createdAt: payment.created_at,
+      });
+    } catch (error) {
+      if (error instanceof PaymentAdapterError) return;
+      throw error;
+    }
+    if (!polled || polled.result.state === 'rejected') return;
+    await this.process(payment.id, payment.merchant_id, polled.transactionId, polled.result);
+  }
+
+  async process(
+    paymentId: string,
+    merchantId: string,
+    transactionId: string,
+    preverified?: PaymentVerificationResult,
+  ): Promise<PaymentProcessingResult> {
     const result = await this.db.query<PaymentRecord>(
       `SELECT id, merchant_id, order_id, amount::text AS amount, amount_base_units::text AS amount_base_units,
               currency, adapter, network, recipient_address, token_address, adapter_data, status, tx_hash, created_at
@@ -91,23 +128,25 @@ export class PaymentVerificationService {
       throw new HttpError(409, 'Another transaction is already being verified for this payment', 'transaction_conflict');
     }
 
-    let verification: PaymentVerificationResult;
-    try {
-      verification = await this.adapters.verifyTransaction(payment.adapter, {
-        paymentId: payment.id,
-        transactionId: normalizedTransactionId,
-        amount: payment.amount,
-        amountBaseUnits: payment.amount_base_units,
-        currency: payment.currency,
-        network: payment.network,
-        recipientAddress: payment.recipient_address,
-        tokenAddress: payment.token_address,
-        adapterData: payment.adapter_data,
-        createdAt: payment.created_at,
-      });
-    } catch (error) {
-      if (error instanceof PaymentAdapterError) throw adapterErrorToHttpError(error);
-      throw error;
+    let verification = preverified;
+    if (!verification) {
+      try {
+        verification = await this.adapters.verifyTransaction(payment.adapter, {
+          paymentId: payment.id,
+          transactionId: normalizedTransactionId,
+          amount: payment.amount,
+          amountBaseUnits: payment.amount_base_units,
+          currency: payment.currency,
+          network: payment.network,
+          recipientAddress: payment.recipient_address,
+          tokenAddress: payment.token_address,
+          adapterData: payment.adapter_data,
+          createdAt: payment.created_at,
+        });
+      } catch (error) {
+        if (error instanceof PaymentAdapterError) throw adapterErrorToHttpError(error);
+        throw error;
+      }
     }
 
     if (verification.state === 'rejected') {
@@ -255,7 +294,8 @@ export class PaymentVerificationService {
         resourceId: payment.id,
         data: {
           paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
-          currency: payment.currency, network: payment.network, transactionId: transactionHash, transactionHash,
+          adapter: payment.adapter, currency: payment.currency, network: payment.network,
+          transactionId: transactionHash, transactionHash,
           reason: failure.reason, status: 'FAILED',
         },
       });
@@ -328,7 +368,8 @@ export class PaymentVerificationService {
         resourceId: payment.id,
         data: {
           paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
-          currency: payment.currency, network: payment.network, transactionId: transactionHash, transactionHash,
+          adapter: payment.adapter, currency: payment.currency, network: payment.network,
+          transactionId: transactionHash, transactionHash,
           confirmations: verification.receipt.confirmations, status: 'CONFIRMED',
         },
       });
@@ -339,7 +380,8 @@ export class PaymentVerificationService {
         resourceId: payment.order_id,
         data: {
           orderId: payment.order_id, paymentId: payment.id, amount: payment.amount,
-          currency: payment.currency, transactionId: transactionHash, transactionHash, status: 'PAID',
+          adapter: payment.adapter, currency: payment.currency,
+          transactionId: transactionHash, transactionHash, status: 'PAID',
         },
       });
       for (const handler of this.lifecycleHandlers) {
@@ -367,7 +409,8 @@ export class PaymentVerificationService {
       resourceId: payment.id,
       data: {
         paymentId: payment.id, orderId: payment.order_id, amount: payment.amount,
-        currency: payment.currency, network: payment.network, transactionId: transactionHash, transactionHash,
+        adapter: payment.adapter, currency: payment.currency, network: payment.network,
+        transactionId: transactionHash, transactionHash,
         confirmations, status: 'DETECTED',
       },
     });

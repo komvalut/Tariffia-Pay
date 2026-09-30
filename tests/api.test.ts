@@ -21,6 +21,7 @@ import { PaymentVerificationService } from '../src/services/payment-verification
 import { UsdcPaymentDetector } from '../src/services/usdc-payment-detector.js';
 import { WebhookDeliveryWorker } from '../src/services/webhook-delivery-worker.js';
 import { checkoutUrlForPayment } from '../src/checkout-links.js';
+import { checkoutQrContent } from '../src/modules/checkout.js';
 import { verifyWebhookSignature } from '../src/webhooks/signature.js';
 
 const usdcAddress = '0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913';
@@ -109,7 +110,8 @@ describe('Tariffia merchant and payment API', () => {
       manifest: {
         id: 'usdc', name: 'Base USDC', version: 'test', description: 'Test Base USDC adapter',
         capabilities: {
-          paymentRequests: true, transactionVerification: true, automaticDetection: true, refunds: false,
+          paymentRequests: true, transactionVerification: true, statusPolling: false, automaticDetection: true,
+          refunds: false, paymentRequestFormat: 'wallet',
           currencies: ['USDC'], networks: ['base'],
         },
         idempotency: { paymentCreation: 'stable-key-required', transactionVerification: 'network-and-transaction-id' },
@@ -191,6 +193,8 @@ describe('Tariffia merchant and payment API', () => {
     }));
     expect(created.checkoutUrl).toBe(checkoutUrlForPayment(created.payment.id));
     expect(created.qrUrl).toContain(`/p/${created.payment.id}/qr.png`);
+    expect(checkoutQrContent(created.payment.id, 'usdc', created.payment.recipientAddress, adapters))
+      .toBe(created.checkoutUrl);
     const paymentView = await app.inject({
       method: 'GET', url: `/v1/payments/${created.payment.id}`, headers: { authorization: `Bearer ${apiKey}` },
     });
@@ -307,6 +311,14 @@ describe('Tariffia merchant and payment API', () => {
     await app.close();
     app = await buildApp({ db, adapterRegistry: registry });
 
+    provider.available = false;
+    const unavailableMethods = await app.inject({ method: 'GET', url: '/v1/public/payment-methods' });
+    expect(unavailableMethods.json().methods.map((method: { id: string }) => method.id)).toEqual(['usdc']);
+    provider.available = true;
+    const availableMethods = await app.inject({ method: 'GET', url: '/v1/public/payment-methods' });
+    expect(availableMethods.json().methods.map((method: { id: string }) => method.id)).toEqual(['usdc', 'lightning']);
+    const selectedLightning = availableMethods.json().methods.find((method: { id: string }) => method.id === 'lightning');
+
     const merchant = await app.inject({
       method: 'POST', url: '/v1/admin/merchants',
       headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
@@ -316,7 +328,7 @@ describe('Tariffia merchant and payment API', () => {
     const created = await app.inject({
       method: 'POST', url: '/v1/orders',
       headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'lightning-invoice-order-1' },
-      payload: { description: 'Lightning order', amount: '25', currency: 'SAT', adapter: 'lightning' },
+      payload: { description: 'Lightning order', amount: '25', currency: 'SAT', adapter: selectedLightning.id },
     });
     expect(created.statusCode).toBe(201);
     const payment = created.json().payment;
@@ -327,32 +339,41 @@ describe('Tariffia merchant and payment API', () => {
     expect(payment.adapterData).toBeUndefined();
     const invoice = [...provider.invoicesCreated.values()][0]!;
 
-    const pending = await app.inject({
-      method: 'POST', url: `/v1/payments/${payment.id}/verify`,
-      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionId: invoice.paymentHash },
-    });
-    expect(pending.statusCode).toBe(202);
+    expect(payment.paymentMethod).toMatchObject({ id: 'lightning', name: 'Bitcoin Lightning', paymentRequestFormat: 'invoice' });
+    expect(payment.paymentRequest).toBe(invoice.paymentRequest);
+    expect(checkoutQrContent(payment.id, 'lightning', invoice.paymentRequest, registry)).toBe(invoice.paymentRequest);
+    const qr = await app.inject({ method: 'GET', url: `/p/${payment.id}/qr.png` });
+    expect(qr.statusCode).toBe(200);
+    expect(qr.headers['content-type']).toBe('image/png');
+
+    const pending = await app.inject({ method: 'GET', url: `/v1/public/payments/${payment.id}` });
+    expect(pending.statusCode).toBe(200);
     expect(pending.json().payment.status).toBe('PENDING');
 
     provider.setState(invoice.paymentHash, 'settled');
-    const confirmed = await app.inject({
-      method: 'POST', url: `/v1/payments/${payment.id}/verify`,
-      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionId: invoice.paymentHash.toUpperCase() },
-    });
+    const confirmed = await app.inject({ method: 'GET', url: `/v1/public/payments/${payment.id}` });
     expect(confirmed.statusCode).toBe(200);
-    expect(confirmed.json().payment).toMatchObject({ status: 'CONFIRMED', transactionId: invoice.paymentHash });
+    expect(confirmed.json().payment).toMatchObject({
+      status: 'CONFIRMED', orderStatus: 'PAID', transactionId: invoice.paymentHash,
+      paymentMethod: { id: 'lightning', paymentRequestFormat: 'invoice' },
+    });
+    const confirmedRetry = await app.inject({ method: 'GET', url: `/v1/public/payments/${payment.id}` });
+    expect(confirmedRetry.json().payment.status).toBe('CONFIRMED');
+    const order = await app.inject({ method: 'GET', url: `/v1/orders/${created.json().order.id}`, headers: { authorization: `Bearer ${apiKey}` } });
+    expect(order.json().order.status).toBe('PAID');
 
     const ledger = await app.inject({ method: 'GET', url: '/v1/ledger', headers: { authorization: `Bearer ${apiKey}` } });
     expect(ledger.json().entries.map((entry: { entryType: string }) => entry.entryType)).toEqual(expect.arrayContaining([
       'PAYMENT_CONFIRMED', 'PAYMENT_DETECTED', 'PAYMENT_CREATED',
     ]));
     expect(ledger.json().entries).toHaveLength(3);
-    const webhookEvents = await db.query<{ event_type: string; payload: { data: { transactionId?: string } } }>(
+    const webhookEvents = await db.query<{ event_type: string; payload: { data: { adapter?: string; transactionId?: string } } }>(
       'SELECT event_type, payload FROM webhook_events WHERE resource_id = $1 ORDER BY created_at ASC', [payment.id],
     );
     expect(webhookEvents.rows.map((event) => event.event_type)).toContain('payment.confirmed');
-    expect(webhookEvents.rows.find((event) => event.event_type === 'payment.confirmed')?.payload.data.transactionId)
-      .toBe(invoice.paymentHash);
+    expect(webhookEvents.rows.filter((event) => event.event_type === 'payment.confirmed')).toHaveLength(1);
+    expect(webhookEvents.rows.find((event) => event.event_type === 'payment.confirmed')?.payload.data)
+      .toMatchObject({ adapter: 'lightning', transactionId: invoice.paymentHash });
 
     await app.close();
     const disabledRegistry = new PaymentAdapterRegistry();
@@ -373,6 +394,8 @@ describe('Tariffia merchant and payment API', () => {
     });
     expect(rejected.statusCode).toBe(503);
     expect(provider.createCalls).toHaveLength(1);
+    const disabledMethods = await app.inject({ method: 'GET', url: '/v1/public/payment-methods' });
+    expect(disabledMethods.json().methods.map((method: { id: string }) => method.id)).toEqual(['usdc']);
     const adminAdapters = await app.inject({
       method: 'GET', url: '/v1/admin/payment-adapters',
       headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },

@@ -7,8 +7,10 @@ export type PaymentAdapterHealthStatus = 'healthy' | 'degraded' | 'unavailable';
 export interface PaymentAdapterCapabilities {
   readonly paymentRequests: boolean;
   readonly transactionVerification: boolean;
+  readonly statusPolling: boolean;
   readonly automaticDetection: boolean;
   readonly refunds: boolean;
+  readonly paymentRequestFormat: 'wallet' | 'invoice';
   readonly currencies: readonly string[];
   readonly networks: readonly string[];
 }
@@ -87,6 +89,11 @@ export type PaymentVerificationResult =
   | { state: 'failed'; reason: string; receipt: PaymentReceipt }
   | { state: 'verified'; receipt: PaymentReceipt };
 
+export interface PaymentStatusPollResult {
+  transactionId: string;
+  result: PaymentVerificationResult;
+}
+
 /** Implementations own rail-specific configuration, request creation and verification. */
 export interface PaymentAdapter {
   readonly id: string;
@@ -97,4 +104,5 @@ export interface PaymentAdapter {
   normalizeTransactionId(transactionId: string): string;
   createRequest(input: PaymentRequest): Promise<AdapterPaymentDetails>;
   verifyTransaction(input: PaymentVerificationInput): Promise<PaymentVerificationResult>;
+  pollPaymentStatus?(input: Omit<PaymentVerificationInput, 'transactionId'>): Promise<PaymentStatusPollResult | null>;
 }

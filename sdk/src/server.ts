@@ -61,6 +61,12 @@ export interface Payment {
   amountBaseUnits?: string;
   currency: string;
   adapter?: string;
+  paymentMethod?: {
+    id: string;
+    name: string;
+    paymentRequestFormat: 'wallet' | 'invoice';
+  };
+  paymentRequest?: string | null;
   network: string;
   recipientAddress?: string;
   tokenAddress?: string | null;
@@ -71,6 +77,22 @@ export interface Payment {
   detectedAt?: string | null;
   confirmedAt?: string | null;
   createdAt?: string;
+}
+
+export interface PaymentMethodOption {
+  id: string;
+  name: string;
+  description: string;
+  capabilities: {
+    paymentRequests: boolean;
+    transactionVerification: boolean;
+    statusPolling: boolean;
+    automaticDetection: boolean;
+    refunds: boolean;
+    paymentRequestFormat: 'wallet' | 'invoice';
+    currencies: string[];
+    networks: string[];
+  };
 }
 
 export interface PaymentLinkResult {
@@ -227,6 +249,10 @@ export class TariffiaClient {
 
   createPaymentLink(input: CreateOrderInput, options: IdempotentRequestOptions): Promise<PaymentLinkResult> {
     return this.request('/v1/payment-links', 'POST', input, options, options.idempotencyKey);
+  }
+
+  getPaymentMethods(options: RequestOptions = {}): Promise<{ methods: PaymentMethodOption[] }> {
+    return this.request('/v1/public/payment-methods', 'GET', undefined, options);
   }
 
   getPaymentStatus(paymentId: string, options: RequestOptions = {}): Promise<PaymentStatusResult> {
