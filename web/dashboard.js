@@ -469,7 +469,7 @@ function showModal(title, content) {
 async function renderAdminAiForms(target, page) {
   if (role !== 'admin') return;
   if (page === 'ai-providers') {
-    target.innerHTML = `<section class="panel form-panel"><div class="panel-head"><div><h2>Register provider label</h2><p>No provider credentials or integrations are created.</p></div></div><form data-form="provider" class="form-grid"><label class="field"><span>Slug</span><input name="slug" pattern="[a-z0-9][a-z0-9_-]{0,63}" required></label><label class="field span-2"><span>Display name</span><input name="name" maxlength="100" required></label><div class="form-actions"><button class="button primary">Add provider</button><span class="notice" data-notice></span></div></form></section>`;
+    target.innerHTML = `<section class="panel form-panel"><div class="panel-head"><div><h2>Register provider label</h2><p>Provider credentials are read from the server environment and are never stored or shown here.</p></div></div><form data-form="provider" class="form-grid"><label class="field"><span>Slug</span><input name="slug" pattern="[a-z0-9][a-z0-9_-]{0,63}" required></label><label class="field span-2"><span>Display name</span><input name="name" maxlength="100" required></label><label class="field"><span>Integration</span><select name="integration"><option value="openai-compatible">OpenAI-compatible</option></select></label><label class="field"><span>Provider timeout (ms)</span><input name="timeoutMs" type="number" min="1000" max="120000" placeholder="Environment default"></label><div class="form-actions"><button class="button primary">Add provider</button><span class="notice" data-notice></span></div></form></section>`;
   } else if (page === 'ai-models') {
     const providers = await api('/v1/admin/ai/providers');
     target.innerHTML = `<section class="panel form-panel"><div class="panel-head"><div><h2>Add a model and price</h2><p>Prices are USD; blank customer component prices use the markup basis points.</p></div></div>
@@ -478,7 +478,9 @@ async function renderAdminAiForms(target, page) {
       <label class="field"><span>Pricing mode</span><select name="pricingMode"><option>PER_1K_TOKENS</option><option>PER_REQUEST</option><option>PER_REQUEST_AND_TOKENS</option></select></label>
       <label class="field"><span>Provider request USD</span><input name="providerCostPerRequestUsd" value="0" inputmode="decimal"></label><label class="field"><span>Customer request USD (optional)</span><input name="customerPricePerRequestUsd" placeholder="Markup-derived" inputmode="decimal"></label>
       <label class="field"><span>Provider input / 1k USD</span><input name="providerInputCostPer1kUsd" value="0" inputmode="decimal"></label><label class="field"><span>Customer input / 1k USD</span><input name="customerInputPricePer1kUsd" placeholder="Markup-derived" inputmode="decimal"></label>
-      <label class="field"><span>Provider output / 1k USD</span><input name="providerOutputCostPer1kUsd" value="0" inputmode="decimal"></label><label class="field"><span>Customer output / 1k USD</span><input name="customerOutputPricePer1kUsd" placeholder="Markup-derived" inputmode="decimal"></label>
+      <label class="field"><span>Provider output / 1k USD</span><input name="providerOutputCostPer1kUsd" value="0" inputmode="decimal"></label>      <label class="field"><span>Customer output / 1k USD</span><input name="customerOutputPricePer1kUsd" placeholder="Markup-derived" inputmode="decimal"></label>
+      <label class="field"><span>Provider model name</span><input name="providerModel" placeholder="Defaults to the model slug" maxlength="120"></label>
+      <label class="field"><span>Max output tokens</span><input name="maxOutputTokens" type="number" min="1" max="4096" value="512"></label>
       <label class="field"><span>Markup (basis points)</span><input name="markupBps" type="number" min="0" max="100000" value="0"></label><label class="field"><span>Enabled</span><select name="enabled"><option value="false">No</option><option value="true">Yes</option></select></label>
       <div class="form-actions"><button class="button primary" ${providers.providers?.length ? '' : 'disabled'}>Save model pricing</button><span class="notice" data-notice>${providers.providers?.length ? '' : 'Create a provider before adding models.'}</span></div></form></section>`;
   }
@@ -494,7 +496,14 @@ async function submitAdminAiForm(event) {
   button.disabled = true; notice.className = 'notice'; notice.textContent = 'Saving…';
   try {
     if (form.dataset.form === 'provider') {
-      await api('/v1/admin/ai/providers', { method: 'POST', body: JSON.stringify({ slug: values.slug, name: values.name, enabled: true }) });
+      await api('/v1/admin/ai/providers', {
+        method: 'POST',
+        body: JSON.stringify({
+          slug: values.slug, name: values.name, enabled: true,
+          integration: values.integration,
+          ...(values.timeoutMs ? { timeoutMs: Number(values.timeoutMs) } : {}),
+        }),
+      });
     } else {
       const body = {
         slug: values.slug, name: values.name, enabled: values.enabled === 'true', pricingMode: values.pricingMode,
@@ -505,6 +514,8 @@ async function submitAdminAiForm(event) {
         providerOutputCostPer1kUsd: values.providerOutputCostPer1kUsd || '0',
         customerOutputPricePer1kUsd: values.customerOutputPricePer1kUsd || null,
         markupBps: Number(values.markupBps || 0),
+        providerModel: values.providerModel || undefined,
+        maxOutputTokens: Number(values.maxOutputTokens || 512),
       };
       if (form.dataset.modelId) {
         await api(`/v1/admin/ai/models/${form.dataset.modelId}`, { method: 'PUT', body: JSON.stringify(body) });

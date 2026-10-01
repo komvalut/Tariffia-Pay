@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { config, validateProductionConfiguration } from '../src/config.js';
 
+const aiApiKey = 'sk-live-0123456789abcdefghijklmnopqrstuvwxyz';
+
 const productionValues = {
   ...config,
   NODE_ENV: 'production' as const,
@@ -9,6 +11,7 @@ const productionValues = {
   API_KEY_PEPPER: 'different-pepper-with-at-least-thirty-two-chars',
   PUBLIC_BASE_URL: 'https://pay.example.com',
   WEBHOOK_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+  OPENAI_API_KEY: aiApiKey,
 };
 
 const productionEnvironment = {
@@ -17,6 +20,7 @@ const productionEnvironment = {
   API_KEY_PEPPER: productionValues.API_KEY_PEPPER,
   PUBLIC_BASE_URL: productionValues.PUBLIC_BASE_URL,
   WEBHOOK_ENCRYPTION_KEY: productionValues.WEBHOOK_ENCRYPTION_KEY,
+  OPENAI_API_KEY: aiApiKey,
 };
 
 describe('production security configuration', () => {
@@ -50,6 +54,25 @@ describe('production security configuration', () => {
       .toThrow(/TRUST_PROXY.*trust every forwarded address/);
     expect(() => validateProductionConfiguration({ ...productionValues, TRUST_PROXY: '0.0.0.0/0' }, productionEnvironment))
       .toThrow(/trust every forwarded address/);
+  });
+
+  it('requires an explicit AI provider credential and a safe provider origin in production', () => {
+    const { OPENAI_API_KEY: _apiKey, ...missingApiKey } = productionEnvironment;
+    expect(() => validateProductionConfiguration(productionValues, missingApiKey))
+      .toThrow(/OPENAI_API_KEY to be configured explicitly/);
+    expect(() => validateProductionConfiguration({ ...productionValues, OPENAI_BASE_URL: 'http://api.openai.com/v1' }, productionEnvironment))
+      .toThrow(/OPENAI_BASE_URL.*HTTPS/);
+    expect(() => validateProductionConfiguration({ ...productionValues, OPENAI_BASE_URL: 'https://user:secret@api.openai.com/v1' }, productionEnvironment))
+      .toThrow(/must not contain credentials/);
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, OPENAI_API_KEY: 'replace-with-provider-key' },
+      { ...productionEnvironment, OPENAI_API_KEY: 'replace-with-provider-key' },
+    )).toThrow(/real provider credential/);
+    // Disabling the provider removes the requirement entirely.
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, OPENAI_API_ENABLED: false, OPENAI_API_KEY: '' },
+      { ...productionEnvironment, OPENAI_API_KEY: '' },
+    )).not.toThrow();
   });
 
   it('rejects reusing a database password as an application secret', () => {

@@ -22,9 +22,51 @@ export type WebhookEventType =
   | 'subscription.cancelled'
   | 'subscription.past_due'
   | 'subscription.expired'
-  | 'subscription.billing_cycle.created'
+  |   'subscription.billing_cycle.created'
   | 'subscription.billing_cycle.paid'
-  | 'subscription.billing_cycle.failed';
+  | 'subscription.billing_cycle.failed'
+  | 'ai.request.completed'
+  | 'ai.request.failed';
+
+export type AiChatRole = 'system' | 'user' | 'assistant';
+
+export interface AiChatCompletionRequest {
+  requestId: string;
+  customerId: string;
+  provider: string;
+  model: string;
+  messages: Array<{ role: AiChatRole; content: string }>;
+  maxOutputTokens?: number;
+  temperature?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AiChatCompletionResult {
+  request: {
+    id: string;
+    requestId: string;
+    customerId: string;
+    provider: string;
+    model: string;
+    providerRequestId: string;
+    providerResponseId: string;
+    finishReason: string | null;
+    latencyMs: number;
+    message: { role: 'assistant'; content: string };
+  };
+  usage: {
+    id: string;
+    requestId: string;
+    pricingMode: 'PER_REQUEST' | 'PER_1K_TOKENS' | 'PER_REQUEST_AND_TOKENS';
+    inputTokens: number;
+    outputTokens: number;
+    customerPriceUsd: string;
+    creditsDeducted: string;
+    balanceAfter: string;
+    currency: 'CREDITS';
+    usageSource: 'provider' | 'estimated';
+  };
+}
 
 export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE';
 export type SubscriptionBillingMode = 'MANUAL' | 'AUTOMATIC';
@@ -463,6 +505,10 @@ export class TariffiaClient {
 
   getCustomerSubscriptions(customerId: string, options: RequestOptions = {}): Promise<{ subscriptions: Subscription[] }> {
     return this.request(`/v1/customers/${encodeURIComponent(customerId)}/subscriptions`, 'GET', undefined, options);
+  }
+
+  createChatCompletion(input: AiChatCompletionRequest, options: RequestOptions = {}): Promise<AiChatCompletionResult> {
+    return this.request('/v1/ai/chat/completions', 'POST', input, options);
   }
 
   getInvoices(limit = 50, options: RequestOptions = {}): Promise<{ invoices: Invoice[] }> {

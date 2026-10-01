@@ -31,17 +31,21 @@ import { safeErrorMetadata } from './safe-logging.js';
 import { createDefaultPaymentAdapterRegistry } from './payment-adapters/default-registry.js';
 import { PaymentAdapterRegistry } from './payment-adapters/registry.js';
 import { SubscriptionService } from './services/subscription-service.js';
+import { createDefaultAiProviderRegistry } from './ai-providers/default-registry.js';
+import { AiProviderRegistry } from './ai-providers/registry.js';
+import { AiGatewayService } from './services/ai-gateway-service.js';
 
 type AppOptions = {
   db: Database;
   migrate?: () => Promise<void>;
   paymentAdapter?: PaymentAdapter;
   adapterRegistry?: PaymentAdapterRegistry;
+  aiProviderRegistry?: AiProviderRegistry;
   verification?: PaymentVerificationService;
   creditEngine?: CreditEngine;
 };
 
-export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, verification, creditEngine }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, aiProviderRegistry, verification, creditEngine }: AppOptions): Promise<FastifyInstance> {
   if (migrate) await migrate();
   let adapters = adapterRegistry;
   if (!adapters && paymentAdapter) {
@@ -54,6 +58,9 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, v
   const paymentCore = new PaymentCoreService(db, adapters);
   const credits = creditEngine ?? new CreditEngine(db);
   const aiPricing = new AiPricingEngine(db);
+  const aiProviders = aiProviderRegistry ?? createDefaultAiProviderRegistry();
+  await aiProviders.initialize();
+  const aiGateway = new AiGatewayService(db, aiPricing, aiProviders);
   const subscriptions = new SubscriptionService(db, paymentCore, adapters);
   await credits.initialize();
   paymentVerification.addLifecycleHandler(credits);
@@ -138,10 +145,10 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, v
   await app.register(adminWebhookRoutes, { db });
   await app.register(creditRoutes, { db, credits, paymentCore });
   await app.register(adminCreditRoutes, { db, credits });
-  await app.register(adminAiRoutes, { db });
+  await app.register(adminAiRoutes, { db, aiProviders });
   await app.register(adminPaymentAdapterRoutes, { adapters });
   await app.register(subscriptionRoutes, { db, subscriptions });
-  await app.register(aiRoutes, { db, aiPricing });
+  await app.register(aiRoutes, { db, aiPricing, aiGateway, aiProviders });
   await app.register(ledgerRoutes, { db });
   await app.register(dashboardRoutes, { db });
   if (config.NODE_ENV !== 'test') {
@@ -157,6 +164,11 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, v
     app.addHook('onClose', async () => {
       clearInterval(billingTimer);
       await billingRun;
+      await aiProviders.shutdown();
+    });
+  } else {
+    app.addHook('onClose', async () => {
+      await aiProviders.shutdown();
     });
   }
   return app;

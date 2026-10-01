@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { aiProviderKinds } from './ai-provider.js';
 
 export const addressSchema = z.string()
   .regex(/^0x[0-9a-fA-F]{40}$/, 'Must be a valid EVM address')
@@ -66,6 +67,8 @@ export const webhookEventTypes = [
   'subscription.billing_cycle.created',
   'subscription.billing_cycle.paid',
   'subscription.billing_cycle.failed',
+  'ai.request.completed',
+  'ai.request.failed',
 ] as const;
 export type WebhookEventType = typeof webhookEventTypes[number];
 
@@ -152,6 +155,8 @@ export const createAiProviderSchema = z.object({
   slug: aiSlug,
   name: z.string().trim().min(1).max(100),
   enabled: z.boolean().default(true),
+  integration: z.enum(aiProviderKinds).default('openai-compatible'),
+  timeoutMs: z.number().int().min(1000).max(120_000).optional(),
 }).strict();
 
 export const updateAiProviderSchema = z.object({
@@ -160,6 +165,23 @@ export const updateAiProviderSchema = z.object({
 }).strict().refine((input) => Object.values(input).some((value) => value !== undefined), {
   message: 'At least one provider field must be provided',
 });
+
+const aiChatRole = z.enum(['system', 'user', 'assistant']);
+const aiChatMessage = z.object({
+  role: aiChatRole,
+  content: z.string().min(1).max(16_000),
+}).strict();
+
+export const aiChatCompletionSchema = z.object({
+  requestId: z.string().trim().min(8).max(128),
+  customerId: z.string().uuid(),
+  provider: aiSlug,
+  model: aiSlug,
+  messages: z.array(aiChatMessage).min(1).max(64),
+  maxOutputTokens: z.number().int().min(1).max(4096).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  metadata: z.record(z.unknown()).default({}),
+}).strict();
 
 export const createAiModelSchema = z.object({
   slug: aiSlug,
@@ -173,6 +195,8 @@ export const createAiModelSchema = z.object({
   providerOutputCostPer1kUsd: aiUsdRate.default('0'),
   customerOutputPricePer1kUsd: aiUsdRate.nullable().default(null),
   markupBps: z.number().int().min(0).max(100_000).default(0),
+  providerModel: z.string().trim().min(1).max(120).optional(),
+  maxOutputTokens: z.number().int().min(1).max(4096).default(512),
 }).strict();
 
 export const updateAiModelSchema = createAiModelSchema;

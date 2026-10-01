@@ -90,6 +90,7 @@ describe('Tariffia merchant and payment API', () => {
     await pool.query(await readFile(path.join(migrationsDir, '0005_ai_pricing.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0006_invoices_receipts.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0007_subscriptions.sql'), 'utf8'));
+    await pool.query(await readFile(path.join(migrationsDir, '0008_ai_provider_integration.sql'), 'utf8'));
 
     db = {
       query: (text, values = []) => pool.query(text, values),
@@ -1674,6 +1675,78 @@ describe('Tariffia merchant and payment API', () => {
       'SELECT balance_units::text AS balance_units FROM credit_accounts WHERE customer_id = $1', [customerId],
     );
     expect(balance.rows[0].balance_units).toBe('97800000');
+  });
+
+  it('keeps USDC, Lightning, and subscription billing unchanged by the AI provider layer', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants', headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Regression Store', email: 'regression@example.com', walletAddress: '0x4444444444444444444444444444444444444444' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'regression-customer' },
+    });
+    const customerId = customer.json().customer.id as string;
+
+    const order = await app.inject({
+      method: 'POST', url: '/v1/orders',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'regression-order-001' },
+      payload: { customerId, description: 'Regression order', amount: '5.00', currency: 'USDC' },
+    });
+    expect(order.statusCode).toBe(201);
+    expect(Number(order.json().order.amount)).toBe(5);
+    expect(order.json().order.currency).toBe('USDC');
+    expect(order.json().payment).toMatchObject({ adapter: 'usdc', currency: 'USDC' });
+    expect(adapters.getManifest('usdc')?.capabilities.recurringPayments).toBe(false);
+
+    const provider = await app.inject({
+      method: 'POST', url: '/v1/admin/ai/providers', headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { slug: 'regression-ai', name: 'Regression AI' },
+    });
+    const aiProviderId = provider.json().provider.id as string;
+    const aiModel = await app.inject({
+      method: 'POST', url: `/v1/admin/ai/providers/${aiProviderId}/models`,
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: {
+        slug: 'regression-model', name: 'Regression Model', enabled: true, pricingMode: 'PER_1K_TOKENS',
+        providerInputCostPer1kUsd: '0.01000000', providerOutputCostPer1kUsd: '0.02000000', markupBps: 1000,
+      },
+    });
+    expect(aiModel.statusCode).toBe(201);
+    expect(aiModel.json().model).toMatchObject({ providerModel: null, maxOutputTokens: 512 });
+
+    const aiProviderSlug = provider.json().provider.slug as string;
+    const plan = await app.inject({
+      method: 'POST', url: '/v1/subscription-plans', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Regression Plan', amount: '7.00', interval: 'MONTH' },
+    });
+    const subscription = await app.inject({
+      method: 'POST', url: '/v1/subscriptions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'regression-subscription-001' },
+      payload: { planId: plan.json().plan.id, customerId },
+    });
+    expect(subscription.statusCode).toBe(201);
+    expect(subscription.json().subscription).toMatchObject({
+      status: 'PAST_DUE', automaticRenewalAvailable: false,
+    });
+    expect(Number(subscription.json().subscription.amount)).toBe(7);
+    const cycles = await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${subscription.json().subscription.id}/billing-cycles`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(cycles.json().billingCycles[0]).toMatchObject({ cycleNumber: 1, status: 'PENDING' });
+
+    // The AI layer must not add ledger activity of its own: one order plus its subscription
+    // payment request, and no AI or credit entries.
+    const ledger = await db.query<{ entry_type: string }>(
+      'SELECT entry_type FROM ledger_entries ORDER BY created_at ASC',
+    );
+    expect(ledger.rows.map((row) => row.entry_type)).toEqual(['PAYMENT_CREATED', 'PAYMENT_CREATED']);
+    const aiLedger = await db.query(
+      `SELECT id FROM ledger_entries WHERE entry_type IN ('CREDIT_DEDUCTION', 'CREDIT_TOPUP')`,
+    );
+    expect(aiLedger.rows).toHaveLength(0);
   });
 
   it('serves the dashboards with separate admin and merchant data boundaries', async () => {
