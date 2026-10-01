@@ -42,7 +42,8 @@ async function createDatabase(): Promise<Database> {
   );
   await pool.query(webhookMigration);
   for (const migration of ['0004_credit_engine.sql', '0005_ai_pricing.sql', '0006_invoices_receipts.sql',
-    '0007_subscriptions.sql', '0008_ai_provider_integration.sql', '0009_sms_otp.sql']) {
+    '0007_subscriptions.sql', '0008_ai_provider_integration.sql', '0009_sms_otp.sql',
+    '0010_sms_provider_hardening.sql']) {
     await pool.query(await readFile(path.join(migrationsDir, migration), 'utf8'));
   }
   return {
@@ -197,7 +198,8 @@ describe('SMS and OTP charging gateway', () => {
     expect(response.body).not.toContain('providerCostUsd');
     expect(response.body).not.toContain('profitUsd');
     expect(provider.smsCalls).toEqual([{
-      requestId: 'sms-request-0001', to: '+381601234567', message: 'Your package has shipped',
+      requestId: 'sms-request-0001', idempotencyKey: 'sms-request-0001',
+      to: '+381601234567', message: 'Your package has shipped',
     }]);
     expect(await creditBalance(customerId)).toBe(parseUnits('99', 6).toString());
 
@@ -291,7 +293,8 @@ describe('SMS and OTP charging gateway', () => {
     });
     expect(response.statusCode).toBe(201);
     expect(provider.otpCalls).toEqual([{
-      requestId: 'otp-request-0001', to: '+381601234567', codeLength: 6, expirySeconds: 300,
+      requestId: 'otp-request-0001', idempotencyKey: 'otp-request-0001',
+      to: '+381601234567', codeLength: 6, expirySeconds: 300,
     }]);
     expect(provider.smsCalls).toHaveLength(0);
   });

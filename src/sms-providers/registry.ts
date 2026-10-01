@@ -141,12 +141,14 @@ export class SmsProviderRegistry {
     if (!/^[a-z][a-z0-9_-]{0,63}$/.test(provider.id) || manifest.id !== provider.id ||
         !manifest.name?.trim() || !manifest.version?.trim() || !manifest.description?.trim() ||
         !['http-sms'].includes(manifest.kind) || !capabilities ||
-        ['sendSms', 'sendOtp', 'reportsSegments', 'reportsProviderCost']
+        ['sendSms', 'sendOtp', 'reportsSegments', 'reportsProviderCost', 'idempotentRetries']
           .some((key) => typeof capabilities[key as keyof typeof capabilities] !== 'boolean') ||
-        !Number.isInteger(capabilities.maxMessageLength) || capabilities.maxMessageLength < 1 ||
+        !Number.isInteger(capabilities.maxMessageLength) ||
+        capabilities.maxMessageLength < 1 || capabilities.maxMessageLength > 1600 ||
         (capabilities.sendSms && typeof provider.sendSms !== 'function') ||
         (capabilities.sendOtp && typeof provider.sendOtp !== 'function') ||
-        typeof provider.isConfigured !== 'function') {
+        typeof provider.isConfigured !== 'function' ||
+        typeof provider.health !== 'function') {
       throw new Error('SMS provider manifest is invalid');
     }
   }

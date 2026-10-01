@@ -15,21 +15,13 @@ type MockOptions = {
   health?: SmsProviderHealth;
   configured?: boolean;
   nativeOtp?: boolean;
+  /** Declares the provider's idempotent-retry capability in its manifest. */
+  idempotentRetries?: boolean;
 };
 
 export class MockSmsProvider {
-  readonly id = 'mock-sms';
-  readonly manifest = {
-    id: 'mock-sms',
-    name: 'Mock SMS provider',
-    version: '1.0.0',
-    description: 'Deterministic provider used by the SMS integration tests',
-    kind: 'http-sms' as const,
-    capabilities: {
-      sendSms: true, sendOtp: false, maxMessageLength: 1600,
-      reportsSegments: true, reportsProviderCost: true,
-    },
-  };
+  readonly id: string;
+  readonly manifest;
   readonly smsCalls: SmsDeliveryRequest[] = [];
   readonly otpCalls: SmsOtpRequest[] = [];
   readonly initializations: Array<Record<string, unknown>> = [];
@@ -38,9 +30,27 @@ export class MockSmsProvider {
   healthChecks = 0;
   options: MockOptions = {};
 
+  constructor(id = 'mock-sms', name = 'Mock SMS provider') {
+    this.id = id;
+    this.manifest = {
+      id,
+      name,
+      version: '1.0.0',
+      description: 'Deterministic provider used by the SMS integration tests',
+      kind: 'http-sms' as const,
+      capabilities: {
+        sendSms: true, sendOtp: false, maxMessageLength: 1600,
+        reportsSegments: true, reportsProviderCost: true, idempotentRetries: false,
+      },
+    };
+  }
+
   async initialize(settings: Readonly<Record<string, unknown>>): Promise<void> {
     this.initializations.push({ ...settings });
     this.initialized = true;
+    if (this.options.idempotentRetries !== undefined) {
+      this.manifest.capabilities.idempotentRetries = this.options.idempotentRetries;
+    }
     if (this.options.nativeOtp) {
       this.manifest.capabilities.sendOtp = true;
     }
@@ -60,16 +70,17 @@ export class MockSmsProvider {
   }
 
   async sendSms(request: SmsDeliveryRequest): Promise<SmsDeliveryResult> {
-    this.smsCalls.push(request);
+    this.smsCalls.push({ ...request, idempotencyKey: request.idempotencyKey });
     if (this.options.failure) throw this.options.failure;
     const segments = this.options.segments ?? 1;
     return {
-      providerRequestId: request.requestId,
-      providerMessageId: `msg_${request.requestId.replace(/[^A-Za-z0-9_.:-]/g, '')}`.slice(0, 128),
+      providerRequestId: request.idempotencyKey,
+      providerMessageId: `msg_${(request.idempotencyKey ?? request.requestId).replace(/[^A-Za-z0-9_.:-]/g, '')}`.slice(0, 128),
       status: 'sent',
       segments,
       segmentsAuthoritative: this.options.segmentsAuthoritative ?? true,
       providerCostUsd: this.options.providerCostUsd === undefined ? null : this.options.providerCostUsd,
+      currency: 'USD',
     };
   }
 
@@ -78,12 +89,13 @@ export class MockSmsProvider {
     if (this.options.failure) throw this.options.failure;
     const segments = this.options.segments ?? 1;
     return {
-      providerRequestId: request.requestId,
-      providerMessageId: `otp_${request.requestId.replace(/[^A-Za-z0-9_.:-]/g, '')}`.slice(0, 128),
+      providerRequestId: request.idempotencyKey,
+      providerMessageId: `otp_${(request.idempotencyKey ?? request.requestId).replace(/[^A-Za-z0-9_.:-]/g, '')}`.slice(0, 128),
       status: 'sent',
       segments,
       segmentsAuthoritative: this.options.segmentsAuthoritative ?? true,
       providerCostUsd: this.options.providerCostUsd === undefined ? null : this.options.providerCostUsd,
+      currency: 'USD',
     };
   }
 }

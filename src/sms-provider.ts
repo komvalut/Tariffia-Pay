@@ -20,6 +20,12 @@ export interface SmsProviderCapabilities {
   /** Providers that report the actual segment count of a delivered message. */
   readonly reportsSegments: boolean;
   readonly reportsProviderCost: boolean;
+  /**
+   * The provider guarantees server-side deduplication of retries carrying the same stable
+   * idempotency key. Only such providers make timeouts safe to retry or fall back from;
+   * otherwise a timeout is ambiguous (the message may already have been accepted).
+   */
+  readonly idempotentRetries: boolean;
 }
 
 export interface SmsProviderManifest {
@@ -46,14 +52,21 @@ export interface SmsProviderHealth {
 }
 
 export interface SmsDeliveryRequest {
-  /** Stable internal request identifier used for provider idempotency and request records. */
+  /** Stable internal request identifier used for provider request records. */
   readonly requestId: string;
+  /**
+   * Stable idempotency key derived from the Tariffia request. It is identical across
+   * every attempt and fallback of the same request; a new key is never generated
+   * during a safe retry.
+   */
+  readonly idempotencyKey: string;
   readonly to: string;
   readonly message: string;
 }
 
 export interface SmsOtpRequest {
   readonly requestId: string;
+  readonly idempotencyKey: string;
   readonly to: string;
   readonly codeLength: number;
   readonly expirySeconds: number;
@@ -66,8 +79,9 @@ export interface SmsDeliveryResult {
   readonly segments: number;
   /** False when the provider did not report the segment count and the caller must use its estimate. */
   readonly segmentsAuthoritative: boolean;
-  /** Total provider cost in USD for this delivery when the provider reports it; otherwise null. */
+  /** Total provider cost when the provider reports it; otherwise null. Always USD. */
   readonly providerCostUsd: string | null;
+  readonly currency: 'USD';
 }
 
 export interface SmsProvider {
@@ -83,16 +97,20 @@ export interface SmsProvider {
 }
 
 export class SmsProviderError extends Error {
+  /** Server-provided retry hint in milliseconds when the provider supplied one (rate limiting). */
+  readonly retryAfterMs?: number;
+
   constructor(
     readonly kind: SmsProviderErrorKind,
     readonly providerId: string,
     message: string,
     readonly retryable: boolean,
     readonly statusCode: number,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; retryAfterMs?: number },
   ) {
     super(message, options);
     this.name = 'SmsProviderError';
+    this.retryAfterMs = options?.retryAfterMs;
   }
 }
 
@@ -128,11 +146,12 @@ export function normalizeSmsProviderError(error: unknown, providerId: string): S
   }
   if (name === 'SmsProviderHttpError') {
     const status = Number((error as { status?: unknown }).status);
+    const retryAfterMs = retryAfterHint((error as { retryAfterMs?: unknown }).retryAfterMs);
     if (status === 401 || status === 403) {
       return new SmsProviderError('unauthorized', providerId, 'The SMS provider rejected the configured credentials', false, 502, { cause: error });
     }
     if (status === 429) {
-      return new SmsProviderError('rate_limited', providerId, 'The SMS provider is rate limiting this deployment', true, 503, { cause: error });
+      return new SmsProviderError('rate_limited', providerId, 'The SMS provider is rate limiting this deployment', true, 503, { cause: error, retryAfterMs });
     }
     if (status === 404) {
       return new SmsProviderError('not_found', providerId, 'The SMS provider does not expose the requested destination', false, 422, { cause: error });
@@ -146,4 +165,10 @@ export function normalizeSmsProviderError(error: unknown, providerId: string): S
     return new SmsProviderError('unavailable', providerId, 'The SMS provider request failed', true, 502, { cause: error });
   }
   return new SmsProviderError('unavailable', providerId, 'The SMS provider request could not be completed', true, 502, { cause: error });
+}
+
+function retryAfterHint(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 300_000
+    ? Math.round(value)
+    : undefined;
 }

@@ -291,6 +291,7 @@ export const createSmsServiceSchema = z.object({
   otpExpirySeconds: z.number().int().min(60).max(86_400).default(300),
   otpMessageTemplate: otpMessageTemplate.default('Your verification code is {code}'),
   maxMessageLength: z.number().int().min(1).max(1600).default(480),
+  fallbackProviderId: z.string().uuid().nullable().default(null),
   metadata: z.record(z.unknown()).default({}),
 }).strict();
 

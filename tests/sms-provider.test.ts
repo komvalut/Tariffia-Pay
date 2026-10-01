@@ -14,6 +14,7 @@ const apiKey = 'sms-live-provider-credential-value-1234567890';
 function deliveryRequest(overrides: Partial<SmsDeliveryRequest> = {}): SmsDeliveryRequest {
   return {
     requestId: 'sms-request-0001',
+    idempotencyKey: 'sms-request-0001',
     to: '+381601234567',
     message: 'Your verification code is 123456',
     ...overrides,
@@ -50,7 +51,10 @@ describe('SMS provider registry', () => {
     expect(summary).toMatchObject({
       id: 'mock-sms', status: 'enabled', lifecycle: 'ready', configured: true,
       health: { status: 'healthy' },
-      capabilities: { sendSms: true, sendOtp: false, reportsSegments: true, reportsProviderCost: true },
+      capabilities: {
+        sendSms: true, sendOtp: false, reportsSegments: true,
+        reportsProviderCost: true, idempotentRetries: false,
+      },
     });
     await registry.shutdown();
     expect(provider.shutDown).toBe(true);
@@ -98,6 +102,43 @@ describe('SMS provider registry', () => {
     expect(() => registry.getConfiguredProvider('mock-sms')).toThrow(/no configured credential/);
   });
 
+  it('supports multiple registered providers with independent state and ids', async () => {
+    const primary = new MockSmsProvider('mock-sms', 'Primary Mock');
+    const backup = new MockSmsProvider('mock-sms-backup', 'Backup Mock');
+    backup.options = { idempotentRetries: true };
+    const registry = new SmsProviderRegistry();
+    registry.register(primary, { enabled: true, settings: { apiKey } });
+    registry.register(backup, { enabled: true, settings: { apiKey: 'other-key' } });
+    await registry.initialize();
+
+    const summaries = await registry.list();
+    expect(summaries.map((summary) => summary.id)).toEqual(['mock-sms', 'mock-sms-backup']);
+    expect(summaries[1]).toMatchObject({ name: 'Backup Mock', configured: true });
+    expect(registry.getManifest('mock-sms-backup')?.capabilities.idempotentRetries).toBe(true);
+    expect(registry.getManifest('mock-sms')?.capabilities.idempotentRetries).toBe(false);
+    expect(primary.initializations).toEqual([{ apiKey }]);
+    expect(backup.initializations).toEqual([{ apiKey: 'other-key' }]);
+
+    // Disabling one provider never affects the other.
+    const disabled = new SmsProviderRegistry();
+    disabled.register(primary, { enabled: true, settings: {} });
+    disabled.register(backup, { enabled: false, settings: {} });
+    await disabled.initialize();
+    expect(disabled.isEnabled('mock-sms')).toBe(true);
+    expect(disabled.isEnabled('mock-sms-backup')).toBe(false);
+    expect(() => disabled.getConfiguredProvider('mock-sms-backup')).toThrow(/disabled/);
+    expect(() => disabled.getConfiguredProvider('mock-sms')).not.toThrow();
+    await disabled.shutdown();
+  });
+
+  it('rejects a manifest without the idempotent-retry capability declaration', () => {
+    const provider = new MockSmsProvider();
+    const invalid = { ...provider, manifest: { ...provider.manifest, capabilities: { ...provider.manifest.capabilities } } } as never;
+    delete (invalid as { manifest: { capabilities: Record<string, unknown> } }).manifest.capabilities.idempotentRetries;
+    expect(() => new SmsProviderRegistry().register(invalid, { enabled: true, settings: {} }))
+      .toThrow(/manifest is invalid/);
+  });
+
   it('exposes the default registry with the environment-configured provider only', async () => {
     const registry = createDefaultSmsProviderRegistry();
     await registry.initialize();
@@ -138,6 +179,7 @@ describe('HTTP SMS provider', () => {
       segments: 1,
       segmentsAuthoritative: true,
       providerCostUsd: '0.00400000',
+      currency: 'USD',
     });
   });
 
@@ -152,6 +194,7 @@ describe('HTTP SMS provider', () => {
       segments: 1,
       segmentsAuthoritative: false,
       providerCostUsd: null,
+      currency: 'USD',
     });
   });
 
@@ -197,6 +240,18 @@ describe('HTTP SMS provider', () => {
       expect((error as Error).message).not.toContain('upstream detail');
       expect((error as Error).message).not.toContain('123456');
     }
+  });
+
+  it('carries the provider retry-after hint on rate-limited responses', async () => {
+    const rateLimited = new Response(JSON.stringify({ message: 'slow down' }), {
+      status: 429,
+      headers: { 'content-type': 'application/json', 'retry-after': '30' },
+    });
+    const provider = await providerWith((async () => rateLimited) as unknown as typeof fetch);
+    const error = await provider.sendSms(deliveryRequest()).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(SmsProviderError);
+    expect(error).toMatchObject({ kind: 'rate_limited', retryable: true, statusCode: 503, retryAfterMs: 30_000 });
+    expect((error as Error).message).not.toContain('slow down');
   });
 
   it('refuses to call the provider without a credential or endpoint', async () => {

@@ -15,13 +15,33 @@ function pageLimit(value: string | undefined): number {
   return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
 }
 
-const serviceColumns = `id, provider_id, slug, name, type, enabled,
+/** The fallback provider must exist, be enabled and differ from the primary. */
+async function validateFallback(
+  db: Database,
+  fallbackProviderId: string | null,
+  primaryProviderId: string,
+): Promise<void> {
+  if (!fallbackProviderId) return;
+  if (fallbackProviderId === primaryProviderId) {
+    throw new HttpError(400, 'The fallback provider must differ from the primary provider', 'invalid_fallback_provider');
+  }
+  const fallback = await db.query<{ id: string; enabled: boolean }>(
+    'SELECT id, enabled FROM sms_providers WHERE id = $1', [fallbackProviderId],
+  );
+  if (!fallback.rows[0]) throw new HttpError(404, 'SMS provider not found', 'sms_provider_not_found');
+  if (!fallback.rows[0].enabled) {
+    throw new HttpError(400, 'The fallback provider must be enabled', 'invalid_fallback_provider');
+  }
+}
+
+const serviceColumns = `id, provider_id, fallback_provider_id, slug, name, type, enabled,
   customer_price_per_sms_usd::text AS customer_price_per_sms_usd,
   provider_cost_per_sms_usd::text AS provider_cost_per_sms_usd, markup_bps,
   otp_length, otp_expiry_seconds, otp_message_template, max_message_length,
   metadata, created_at, updated_at`;
 
-const serviceFields = `s.id, s.provider_id AS "providerId", s.slug, s.name, s.type, s.enabled,
+const serviceFields = `s.id, s.provider_id AS "providerId", s.fallback_provider_id AS "fallbackProviderId",
+  s.slug, s.name, s.type, s.enabled,
   s.customer_price_per_sms_usd::text AS "customerPricePerSmsUsd",
   s.provider_cost_per_sms_usd::text AS "providerCostPerSmsUsd", s.markup_bps AS "markupBps",
   s.otp_length AS "otpLength", s.otp_expiry_seconds AS "otpExpirySeconds",
@@ -31,6 +51,7 @@ const serviceFields = `s.id, s.provider_id AS "providerId", s.slug, s.name, s.ty
 const camelService = (row: Record<string, unknown>) => ({
   id: row.id,
   providerId: row.provider_id,
+  fallbackProviderId: row.fallback_provider_id,
   slug: row.slug,
   name: row.name,
   type: row.type,
@@ -59,15 +80,31 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
            FROM sms_providers ORDER BY name ASC`,
       );
       const installed = new Map((await smsProviders.list()).map((provider) => [provider.id, provider]));
+      const stats = await db.query<{
+        provider_id: string; request_count: number; completed_count: number;
+        failed_count: number; average_latency_ms: string | null;
+      }>(
+        `SELECT provider_id, count(*)::int AS request_count,
+                COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0)::int AS completed_count,
+                COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0)::int AS failed_count,
+                avg(latency_ms)::text AS average_latency_ms
+           FROM sms_provider_requests GROUP BY provider_id`,
+      );
+      const statsById = new Map(stats.rows.map((row) => [row.provider_id, row]));
       return reply.send({
         providers: providers.rows.map((provider) => {
           const runtime = installed.get(provider.slug);
+          const stat = statsById.get(provider.id);
           return {
             ...provider,
             installed: Boolean(runtime),
             registryStatus: runtime?.status ?? 'disabled',
             configured: runtime?.configured ?? false,
             capabilities: runtime?.capabilities ?? null,
+            requestCount: stat?.request_count ?? 0,
+            completedCount: stat?.completed_count ?? 0,
+            failedCount: stat?.failed_count ?? 0,
+            averageLatencyMs: stat?.average_latency_ms ? Math.round(Number(stat.average_latency_ms)) : null,
           };
         }),
         integrations: await smsProviders.list(),
@@ -123,8 +160,11 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
     app.get('/v1/admin/sms/services', async (request, reply) => {
       requireAdmin(request);
       const result = await db.query(
-        `SELECT ${serviceFields}, p.slug AS "providerSlug", p.name AS "providerName"
+        `SELECT ${serviceFields}, p.slug AS "providerSlug", p.name AS "providerName",
+                fp.slug AS "fallbackProviderSlug", fp.name AS "fallbackProviderName",
+                fp.enabled AS "fallbackProviderEnabled"
            FROM sms_services s JOIN sms_providers p ON p.id = s.provider_id
+           LEFT JOIN sms_providers fp ON fp.id = s.fallback_provider_id
           ORDER BY p.name ASC, s.name ASC`,
       );
       return reply.send({ services: result.rows });
@@ -136,13 +176,14 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
       const { providerId } = request.params as { providerId: string };
       const provider = await db.query('SELECT id FROM sms_providers WHERE id = $1', [providerId]);
       if (!provider.rows[0]) throw new HttpError(404, 'SMS provider not found', 'sms_provider_not_found');
+      await validateFallback(db, body.fallbackProviderId, providerId);
       const result = await db.query(
-        `INSERT INTO sms_services (id, provider_id, slug, name, type, enabled,
+        `INSERT INTO sms_services (id, provider_id, fallback_provider_id, slug, name, type, enabled,
             customer_price_per_sms_usd, provider_cost_per_sms_usd, markup_bps,
             otp_length, otp_expiry_seconds, otp_message_template, max_message_length, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
          RETURNING ${serviceColumns}`,
-        [newId(), providerId, body.slug, body.name, body.type, body.enabled,
+        [newId(), providerId, body.fallbackProviderId, body.slug, body.name, body.type, body.enabled,
           body.customerPricePerSmsUsd, body.providerCostPerSmsUsd, body.markupBps,
           body.otpLength, body.otpExpirySeconds, body.otpMessageTemplate, body.maxMessageLength,
           JSON.stringify(body.metadata)],
@@ -155,16 +196,21 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
       requireAdmin(request);
       const body = parseBody(updateSmsServiceSchema, request.body);
       const { serviceId } = request.params as { serviceId: string };
+      const existing = await db.query<{ provider_id: string }>(
+        'SELECT provider_id FROM sms_services WHERE id = $1', [serviceId],
+      );
+      if (!existing.rows[0]) throw new HttpError(404, 'SMS service not found', 'sms_service_not_found');
+      await validateFallback(db, body.fallbackProviderId, existing.rows[0].provider_id);
       const result = await db.query(
         `UPDATE sms_services SET slug = $2, name = $3, type = $4, enabled = $5,
             customer_price_per_sms_usd = $6, provider_cost_per_sms_usd = $7, markup_bps = $8,
             otp_length = $9, otp_expiry_seconds = $10, otp_message_template = $11,
-            max_message_length = $12, metadata = $13::jsonb, updated_at = now()
+            max_message_length = $12, metadata = $13::jsonb, fallback_provider_id = $14, updated_at = now()
           WHERE id = $1 RETURNING ${serviceColumns}`,
         [serviceId, body.slug, body.name, body.type, body.enabled,
           body.customerPricePerSmsUsd, body.providerCostPerSmsUsd, body.markupBps,
           body.otpLength, body.otpExpirySeconds, body.otpMessageTemplate, body.maxMessageLength,
-          JSON.stringify(body.metadata)],
+          JSON.stringify(body.metadata), body.fallbackProviderId],
       );
       if (!result.rows[0]) throw new HttpError(404, 'SMS service not found', 'sms_service_not_found');
       return reply.send({ service: camelService(result.rows[0]) });
@@ -178,7 +224,7 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
                 s.slug AS service, p.slug AS provider, r.request_id AS "requestId", r.kind,
                 r.provider_request_id AS "providerRequestId", r.provider_message_id AS "providerMessageId",
                 r.status, r.failure_kind AS "failureKind", r.failure_message AS "failureMessage",
-                r.units, r.usage_authoritative AS "usageAuthoritative", r.latency_ms AS "latencyMs",
+                r.attempts, r.units, r.usage_authoritative AS "usageAuthoritative", r.latency_ms AS "latencyMs",
                 r.created_at AS "createdAt", r.completed_at AS "completedAt"
            FROM sms_provider_requests r JOIN sms_services s ON s.id = r.service_id
            JOIN sms_providers p ON p.id = r.provider_id

@@ -18,7 +18,7 @@ type HttpSmsProviderSettings = {
   healthPath: string;
 };
 
-type ProviderHttpError = Error & { name: 'SmsProviderHttpError'; status: number };
+type ProviderHttpError = Error & { name: 'SmsProviderHttpError'; status: number; retryAfterMs?: number };
 
 type ProviderResponse = {
   id?: unknown;
@@ -30,7 +30,7 @@ type ProviderResponse = {
 const manifest: SmsProviderManifest = {
   id: 'http-sms',
   name: 'HTTP SMS provider',
-  version: '1.0.0',
+  version: '1.1.0',
   description: 'Server-configured HTTP SMS delivery endpoint with bearer authentication',
   kind: 'http-sms',
   capabilities: {
@@ -39,6 +39,9 @@ const manifest: SmsProviderManifest = {
     maxMessageLength: 1600,
     reportsSegments: true,
     reportsProviderCost: true,
+    // The generic HTTP contract sends a stable idempotency key but cannot guarantee
+    // upstream deduplication, so timeouts stay ambiguous and are never retried.
+    idempotentRetries: false,
   },
 };
 
@@ -95,11 +98,12 @@ export class HttpSmsProvider implements SmsProvider {
     if (!request.message.trim() || request.message.length > manifest.capabilities.maxMessageLength) {
       throw new SmsProviderError('invalid_request', this.id, 'The message length is not supported', false, 400);
     }
+    // The idempotency key is stable per Tariffia request and identical on every retry.
     const response = await this.requestJson('POST', this.settings.sendPath, {
       to: request.to,
       message: request.message,
-      idempotency_key: request.requestId,
-    }, 'sms delivery', request.requestId);
+      idempotency_key: request.idempotencyKey,
+    }, 'sms delivery', request.idempotencyKey);
     return this.normalizeDelivery(response, request);
   }
 
@@ -120,12 +124,13 @@ export class HttpSmsProvider implements SmsProvider {
       ? response.segments
       : null;
     return {
-      providerRequestId: request.requestId,
+      providerRequestId: request.idempotencyKey,
       providerMessageId,
       status: 'sent',
       segments: segments ?? 1,
       segmentsAuthoritative: segments !== null,
       providerCostUsd: providerCost(response.cost),
+      currency: 'USD',
     };
   }
 
@@ -152,7 +157,7 @@ export class HttpSmsProvider implements SmsProvider {
         ...(body ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal,
       });
-      if (!response.ok) throw this.httpError(response.status, operation);
+      if (!response.ok) throw this.httpError(response.status, operation, response.headers.get('retry-after'));
       return await response.json() as ProviderResponse;
     } catch (error) {
       throw normalizeSmsProviderError(error, this.id);
@@ -161,10 +166,12 @@ export class HttpSmsProvider implements SmsProvider {
     }
   }
 
-  private httpError(status: number, operation: string): ProviderHttpError {
+  private httpError(status: number, operation: string, retryAfter?: string | null): ProviderHttpError {
     const error = new Error(`The SMS provider rejected the ${operation} request`) as ProviderHttpError;
     error.name = 'SmsProviderHttpError';
     error.status = status;
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0 && seconds <= 300) error.retryAfterMs = Math.round(seconds * 1000);
     return error;
   }
 }
