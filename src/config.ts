@@ -41,6 +41,12 @@ const schema = z.object({
   AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(4096).default(512),
   AI_AUTHORIZATION_BUFFER_BPS: z.coerce.number().int().min(0).max(10_000).default(1_000),
   AI_MAX_PROMPT_TOKENS: z.coerce.number().int().min(1).max(100_000).default(32_000),
+  SMS_PROVIDER_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
+  SMS_HTTP_BASE_URL: z.string().default(''),
+  SMS_HTTP_API_KEY: z.string().default(''),
+  SMS_HTTP_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(30_000),
+  SMS_HTTP_SEND_PATH: z.string().default('/v1/messages'),
+  SMS_HTTP_HEALTH_PATH: z.string().default('/health'),
   CREDITS_PER_USDC_RATE: z.coerce.number().int().min(1).max(1_000_000).default(100),
   CREDIT_MINIMUM_TOPUP_USDC: z.string().regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/).default('1.000000'),
   CREDIT_MAXIMUM_TOPUP_USDC: z.string().regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/).default('1000.000000'),
@@ -109,6 +115,25 @@ export function validateProductionConfiguration(
     }
     if (values.OPENAI_API_KEY.length < 20 || /^(replace-with-|change-me|sk-test)/i.test(values.OPENAI_API_KEY)) {
       throw new Error('OPENAI_API_KEY must be a real provider credential in production');
+    }
+  }
+  if (values.SMS_PROVIDER_ENABLED) {
+    if (!values.SMS_HTTP_BASE_URL.trim() || !environment.SMS_HTTP_BASE_URL?.trim()) {
+      throw new Error('An enabled SMS provider requires SMS_HTTP_BASE_URL to be configured explicitly');
+    }
+    const smsBaseUrl = new URL(values.SMS_HTTP_BASE_URL);
+    if (smsBaseUrl.protocol !== 'https:') throw new Error('SMS_HTTP_BASE_URL must use HTTPS in production');
+    if (smsBaseUrl.username || smsBaseUrl.password || smsBaseUrl.search || smsBaseUrl.hash) {
+      throw new Error('SMS_HTTP_BASE_URL must not contain credentials, query data, or a fragment');
+    }
+    if (!values.SMS_HTTP_API_KEY.trim() || !environment.SMS_HTTP_API_KEY?.trim()) {
+      throw new Error('An enabled SMS provider requires SMS_HTTP_API_KEY to be configured explicitly');
+    }
+    if (values.SMS_HTTP_API_KEY.length < 20 || /^(replace-with-|change-me|test-)/i.test(values.SMS_HTTP_API_KEY)) {
+      throw new Error('SMS_HTTP_API_KEY must be a real provider credential in production');
+    }
+    if (!values.SMS_HTTP_SEND_PATH.startsWith('/') || !values.SMS_HTTP_HEALTH_PATH.startsWith('/')) {
+      throw new Error('SMS provider paths must be relative paths');
     }
   }
   if (values.LIGHTNING_ADAPTER_ENABLED && values.LIGHTNING_PROVIDER_TYPE === 'none') {

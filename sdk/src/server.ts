@@ -26,7 +26,66 @@ export type WebhookEventType =
   | 'subscription.billing_cycle.paid'
   | 'subscription.billing_cycle.failed'
   | 'ai.request.completed'
-  | 'ai.request.failed';
+  | 'ai.request.failed'
+  | 'sms.request.completed'
+  | 'sms.request.failed';
+
+export type SmsRequestKind = 'SMS' | 'OTP';
+export type SmsUsageSource = 'provider' | 'estimated';
+
+export interface SmsService {
+  service: string;
+  name: string;
+  type: 'otp_sms';
+  pricePerSmsUsd: string;
+  maxMessageLength: number;
+  providerConfigured: boolean;
+  otpLength: number;
+  otpExpirySeconds: number;
+}
+
+export interface SmsSendInput {
+  requestId: string;
+  service: string;
+  to: string;
+  message: string;
+  customerId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SmsOtpInput {
+  requestId: string;
+  service: string;
+  to: string;
+  customerId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SmsRequestResult {
+  request: {
+    id: string;
+    requestId: string;
+    customerId: string;
+    service: string;
+    provider: string;
+    kind: SmsRequestKind;
+    providerRequestId: string;
+    providerMessageId: string;
+    status: 'sent';
+    latencyMs: number;
+  };
+  usage: {
+    id: string;
+    requestId: string;
+    kind: SmsRequestKind;
+    units: number;
+    usageSource: SmsUsageSource;
+    customerPriceUsd: string;
+    creditsDeducted: string;
+    balanceAfter: string;
+    currency: 'CREDITS';
+  };
+}
 
 export type AiChatRole = 'system' | 'user' | 'assistant';
 
@@ -509,6 +568,18 @@ export class TariffiaClient {
 
   createChatCompletion(input: AiChatCompletionRequest, options: RequestOptions = {}): Promise<AiChatCompletionResult> {
     return this.request('/v1/ai/chat/completions', 'POST', input, options);
+  }
+
+  getSmsServices(options: RequestOptions = {}): Promise<{ services: SmsService[] }> {
+    return this.request('/v1/sms/services', 'GET', undefined, options);
+  }
+
+  sendSms(input: SmsSendInput, options: RequestOptions = {}): Promise<SmsRequestResult> {
+    return this.request('/v1/sms/send', 'POST', input, options);
+  }
+
+  sendOtp(input: SmsOtpInput, options: RequestOptions = {}): Promise<SmsRequestResult> {
+    return this.request('/v1/sms/otp', 'POST', input, options);
   }
 
   getInvoices(limit = 50, options: RequestOptions = {}): Promise<{ invoices: Invoice[] }> {

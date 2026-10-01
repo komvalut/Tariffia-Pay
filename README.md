@@ -6,6 +6,8 @@ Self-hosted, non-custodial merchant payment infrastructure. The payment core own
 
 Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, the formal payment-adapter contract and registry with Base USDC verification and a disabled-by-default LND REST Lightning provider, unified multi-method checkout, invoices and receipts, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, the official TypeScript integration package, production security hardening, and self-hosted production deployment support. Configure Lightning only through server-side environment secrets. Additional payment methods are later phases.
 
+Phase 16 added merchant subscription plans, billing cycles and lifecycle management on the same Payment Core. Phase 17 connected the AI pricing engine to a real OpenAI-compatible provider behind a server-side credential with credit authorization before every provider call. Phase 18 added the OTP/SMS charging service on the same credit, ledger and pricing architecture.
+
 ## Run locally
 
 Requirements: Node.js 20+ and Docker Compose.
@@ -69,8 +71,10 @@ Other merchant endpoints:
 - `POST /v1/credits/topups`, `POST /v1/credits/deductions`
 - `GET /v1/credits/:customerId/balance`, `/topups`, `/usage`
 - Admin: `GET/PUT /v1/admin/credits/settings`, `GET /v1/admin/credits/accounts`, `GET /v1/admin/credits/transactions`
-- AI: `GET /v1/ai/models`, `POST /v1/ai/usage`, `GET /v1/ai/usage`
-- Admin AI: `GET/POST /v1/admin/ai/providers`, `PUT /v1/admin/ai/providers/:providerId`, `GET /v1/admin/ai/models`, `POST /v1/admin/ai/providers/:providerId/models`, `PUT /v1/admin/ai/models/:modelId`, `GET /v1/admin/ai/usage`
+- AI: `GET /v1/ai/models`, `POST /v1/ai/chat/completions`, `POST /v1/ai/usage`, `GET /v1/ai/usage`
+- Admin AI: `GET/POST /v1/admin/ai/providers`, `PUT /v1/admin/ai/providers/:providerId`, `GET /v1/admin/ai/models`, `POST /v1/admin/ai/providers/:providerId/models`, `PUT /v1/admin/ai/models/:modelId`, `GET /v1/admin/ai/usage`, `GET /v1/admin/ai/requests`
+- SMS: `GET /v1/sms/services`, `POST /v1/sms/send`, `POST /v1/sms/otp`
+- Admin SMS: `GET/POST /v1/admin/sms/providers`, `PUT /v1/admin/sms/providers/:providerId`, `POST /v1/admin/sms/providers/:providerId/health`, `GET /v1/admin/sms/services`, `POST /v1/admin/sms/providers/:providerId/services`, `PUT /v1/admin/sms/services/:serviceId`, `GET /v1/admin/sms/requests`, `GET /v1/admin/sms/usage`
 - Dashboards: `/admin` and `/merchant`; collection reads are available under `/v1/admin/dashboard/*` and merchant-scoped `/v1/dashboard/*`
 - TypeScript SDK: `sdk/` (`@tariffia/pay/server` and credential-free `@tariffia/pay/browser` exports)
 
@@ -123,7 +127,7 @@ Checkout routes are `GET /p/:paymentId`, `GET /p/:paymentId/qr.png`, `GET /v1/pu
 
 ## Webhooks
 
-Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired`, `order.paid`, `credit.topup`, `credit.deducted`, `ai.usage.recorded`, `invoice.issued` and `receipt.issued`. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger/credit/AI-usage/document transition, then delivered asynchronously.
+Merchants configure an endpoint URL, a set of event types and a secret they already control. Supported events are `payment.created`, `payment.detected`, `payment.confirmed`, `payment.failed`, `payment.expired`, `order.paid`, `credit.topup`, `credit.deducted`, `ai.usage.recorded`, `invoice.issued` and `receipt.issued`, plus the subscription, AI provider request (`ai.request.completed`/`ai.request.failed`) and SMS request (`sms.request.completed`/`sms.request.failed`) lifecycle events. Events are recorded in a transactional outbox alongside the corresponding payment/order/ledger/credit/AI-usage/SMS-usage/document transition, then delivered asynchronously.
 
 Payments expire after `PAYMENT_EXPIRATION_MINUTES` only when no transaction hash has been submitted. A submitted or on-chain-detected transfer is not expired while verification is pending. `payment.failed` is emitted only when the configured USDC contract receipt proves that the matching transfer call reverted; an arbitrary invalid hash does not fail the payment.
 
@@ -210,6 +214,39 @@ curl -X POST http://localhost:8080/v1/ai/usage \
 
 Admins can inspect configured costs and margins with `GET /v1/admin/ai/models` and `GET /v1/admin/ai/usage`; merchant-facing model and usage endpoints do not expose provider cost or markup.
 
+## SMS and OTP Services
+
+Tariffia's second metered V1 service is OTP/SMS delivery, built on the same provider abstraction, pricing engine, credit accounts and ledger as the AI service. A formal `SmsProvider` contract (`src/sms-provider.ts`) with capabilities, health checks and normalized errors is registered in a server-side registry (`src/sms-providers/`). The bundled integration is an HTTP SMS provider configured exclusively through environment secrets (`SMS_HTTP_BASE_URL`, `SMS_HTTP_API_KEY`, `SMS_HTTP_TIMEOUT_MS`, `SMS_HTTP_SEND_PATH`, `SMS_HTTP_HEALTH_PATH`); the provider API key is never stored in the database, returned by any endpoint, or written to logs. Disable the integration entirely with `SMS_PROVIDER_ENABLED=false`.
+
+Administrators register provider rows and define Tariffia-owned services (initial type: `otp_sms`) with per-message customer pricing, optional provider cost, markup basis points, OTP length/expiry and a `{code}` message template. The customer never selects a provider: they select a Tariffia service, and Tariffia chooses the configured provider.
+
+```sh
+curl -X POST http://localhost:8080/v1/admin/sms/providers \
+  -H 'content-type: application/json' -H "x-admin-api-key: $ADMIN_API_KEY" \
+  -d '{"slug":"http-sms","name":"Primary SMS gateway"}'
+
+# Use the returned provider ID in the service path. A null customer price derives from markupBps.
+curl -X POST http://localhost:8080/v1/admin/sms/providers/PROVIDER_UUID/services \
+  -H 'content-type: application/json' -H "x-admin-api-key: $ADMIN_API_KEY" \
+  -d '{"slug":"otp_sms","name":"OTP SMS","type":"otp_sms","enabled":true,"providerCostPerSmsUsd":"0.00400000","customerPricePerSmsUsd":"0.00500000","markupBps":0,"otpLength":6,"otpExpirySeconds":300,"maxMessageLength":480}'
+```
+
+Send an SMS or request an OTP delivery with the merchant API key. `requestId` is the idempotency key scoped to the merchant: a duplicate identifier returns `409 sms_request_conflict` without calling the provider or charging again. `customerId` is optional; when omitted, usage bills the merchant's own account (an internal `merchant-self` billing customer). Insufficient credits for the maximum cost of the request return `409 insufficient_credits` before any provider call. Long messages are priced per segment (GSM-7/UCS-2 estimation bounds the authorization; provider-reported segments settle the charge).
+
+```sh
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -d '{"requestId":"sms-request-0001","service":"otp_sms","to":"+381601234567","message":"Your package has shipped"}'
+
+curl -X POST http://localhost:8080/v1/sms/otp \
+  -H 'content-type: application/json' -H 'authorization: Bearer tf_live_REPLACE_ME' \
+  -d '{"requestId":"otp-request-0001","service":"otp_sms","to":"+381601234567"}'
+```
+
+`POST /v1/sms/otp` generates the code server side when the provider has no native OTP capability, renders the configured template and delivers it through the provider. The OTP code is never stored, logged, returned in the API response, included in webhook payloads, or kept in the provider request record; only identifiers, statuses, segment counts and latencies are recorded. `GET /v1/sms/services` lists enabled services with customer pricing only.
+
+Successful delivery settles atomically in one transaction: credit deduction, `CREDIT_DEDUCTION` ledger entry, SMS usage record (customer price, provider cost when reported, profit) and the `credit.deducted` plus `sms.request.completed` webhooks. Provider failures never charge: the request is marked `FAILED` with a canonical error category, `sms.request.failed` is emitted, and provider errors are normalized (`504 sms_provider_timeout` for timeouts, plus rate-limited, unauthorized, invalid-request and unavailable categories) so raw provider text, credentials and message content are never exposed. OTP delivery has a stricter per-route rate limit in addition to the global API limit. Admin SMS endpoints expose provider health/capabilities/configuration status and the request/usage trails without credentials.
+
 ## TypeScript Integration Layer
 
 The publishable SDK package is in `sdk/`. `@tariffia/pay/server` wraps the existing `/v1` API with merchant bearer authentication, typed responses and errors, explicit idempotency keys, and webhook signature verification. It does not contain payment, credit, or pricing logic. See [`sdk/README.md`](sdk/README.md) for REST, TypeScript, checkout, webhook, credit, and AI usage examples.
@@ -226,7 +263,7 @@ Merchant dashboards show the configured customer price and credits charged for A
 
 ## Architecture
 
-`src/payment-adapter.ts` defines the common rail contract; `src/payment-adapters/registry.ts` owns adapter registration, lifecycle, configuration status, selection, capabilities and normalized results. `src/adapters/usdc/` contains the Base USDC implementation. The admin-only `/v1/admin/payment-adapters` endpoint exposes installed method status without exposing settings. See [`PAYMENT_ADAPTERS.md`](PAYMENT_ADAPTERS.md) to add an adapter. `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; `src/services/credit-engine.ts` owns internal balances and atomic deductions; `src/services/ai-pricing-engine.ts` prices and records metered usage; `src/services/webhook-delivery-worker.ts` handles expiry and asynchronous signed delivery. `src/webhooks/` contains secret encryption, signatures and transactional outbox helpers. `src/modules/` separates merchant, admin, dashboard, payment, credit, AI, webhook, API-key and ledger routes. Dashboard HTML, CSS and JavaScript are in `web/`; PostgreSQL schema is versioned under `migrations/`.
+`src/payment-adapter.ts` defines the common rail contract; `src/payment-adapters/registry.ts` owns adapter registration, lifecycle, configuration status, selection, capabilities and normalized results. `src/adapters/usdc/` contains the Base USDC implementation. The admin-only `/v1/admin/payment-adapters` endpoint exposes installed method status without exposing settings. See [`PAYMENT_ADAPTERS.md`](PAYMENT_ADAPTERS.md) to add an adapter. `src/services/payment-core-service.ts` owns idempotent order/payment creation; `src/services/payment-verification-service.ts` coordinates atomic payment/order/ledger updates; `src/services/credit-engine.ts` owns internal balances and atomic deductions; `src/services/ai-pricing-engine.ts` prices and records metered usage; `src/services/usage-settlement.ts` is the shared atomic usage settlement core used by both metered services; `src/services/webhook-delivery-worker.ts` handles expiry and asynchronous signed delivery. `src/ai-provider.ts` and `src/sms-provider.ts` define the AI and SMS provider contracts with their registries under `src/ai-providers/` and `src/sms-providers/`; `src/services/ai-gateway-service.ts` and `src/services/sms-gateway-service.ts` own the authorize-call-settle request flow. `src/webhooks/` contains secret encryption, signatures and transactional outbox helpers. `src/modules/` separates merchant, admin, dashboard, payment, credit, AI, SMS, webhook, API-key and ledger routes. Dashboard HTML, CSS and JavaScript are in `web/`; PostgreSQL schema is versioned under `migrations/`.
 
 ## Development checks
 

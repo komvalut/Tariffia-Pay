@@ -5,6 +5,7 @@ import { HttpError } from '../errors.js';
 import { runIdempotently } from '../idempotency.js';
 import { newId } from '../security.js';
 import { enqueueWebhookEvent } from '../webhooks/outbox.js';
+import { deductUsageCreditsInTransaction } from './usage-settlement.js';
 
 const USD_SCALE = 100_000_000n;
 
@@ -30,7 +31,7 @@ export function ceilDiv(value: bigint, divisor: bigint): bigint {
   return (value + divisor - 1n) / divisor;
 }
 
-function usdFromUnits(value: bigint): string {
+export function usdFromUnits(value: bigint): string {
   const sign = value < 0n ? '-' : '';
   const absolute = value < 0n ? -value : value;
   const whole = absolute / USD_SCALE;
@@ -118,6 +119,21 @@ export function creditUnitsForPrice(customerPriceUsd: string, creditsPerUsdcRate
   return ceilDiv(usdToUnits(customerPriceUsd) * BigInt(creditsPerUsdcRate), 100n);
 }
 
+/**
+ * Prices a metered SMS delivery as `units` message units. SMS services map onto the existing
+ * request-based pricing mode: one message unit is one priced request with no token component,
+ * so provider cost, customer price and profit reuse the same fixed-point engine.
+ */
+export function calculateSmsUsagePrice(model: AiPricingModel, units: number) {
+  if (!Number.isInteger(units) || units < 1) throw new RangeError('Invalid SMS unit count');
+  const perUnit = calculateAiUsagePrice(model, 0, 0);
+  return {
+    providerCostUsd: usdFromUnits(usdToUnits(perUnit.providerCostUsd) * BigInt(units)),
+    customerPriceUsd: usdFromUnits(usdToUnits(perUnit.customerPriceUsd) * BigInt(units)),
+    profitUsd: usdFromUnits(usdToUnits(perUnit.profitUsd) * BigInt(units)),
+  };
+}
+
 export class AiPricingEngine {
   constructor(private readonly db: Database) {}
 
@@ -165,34 +181,23 @@ export class AiPricingEngine {
     const creditUnits = creditUnitsForPrice(price.customerPriceUsd, input.creditsPerUsdcRate);
     if (creditUnits <= 0n) throw new HttpError(409, 'AI model pricing must produce a positive customer charge', 'zero_ai_usage_price');
 
-    const balanceResult = await client.query<{ balance_units: string }>(
-      `UPDATE credit_accounts SET balance_units = balance_units - $2, updated_at = now()
-        WHERE id = $1 AND balance_units >= $2 RETURNING balance_units::text AS balance_units`,
-      [input.accountId, creditUnits.toString()],
-    );
-    if (!balanceResult.rows[0]) throw new HttpError(409, 'Insufficient credits', 'insufficient_credits');
-
-    const transactionId = newId();
     const usageId = newId();
-    const balanceAfter = BigInt(balanceResult.rows[0].balance_units);
     const reference = `ai:${input.requestId}`;
     const transactionMetadata = {
       purpose: 'ai_usage', usageId, requestId: input.requestId,
       provider: input.model.provider_slug, model: input.model.model_slug,
     };
-    await client.query(
-      `INSERT INTO credit_transactions (id, merchant_id, account_id, customer_id, transaction_type,
-                                       credit_units, balance_after_units, reference, idempotency_key, metadata)
-       VALUES ($1, $2, $3, $4, 'DEDUCTION', $5, $6, $7, $8, $9::jsonb)`,
-      [transactionId, input.merchantId, input.accountId, input.customerId, creditUnits.toString(),
-        balanceAfter.toString(), reference, `ai:${input.requestId}`, JSON.stringify(transactionMetadata)],
-    );
-    await client.query(
-      `INSERT INTO ledger_entries (id, merchant_id, entry_type, amount, currency, reference, metadata)
-       VALUES ($1, $2, 'CREDIT_DEDUCTION', $3, 'CREDITS', $4, $5::jsonb)`,
-      [newId(), input.merchantId, formatUnits(creditUnits, 6), transactionId,
-        JSON.stringify({ customerId: input.customerId, creditTransactionId: transactionId, ...transactionMetadata })],
-    );
+    const settlement = await deductUsageCreditsInTransaction(client, {
+      merchantId: input.merchantId,
+      customerId: input.customerId,
+      accountId: input.accountId,
+      creditUnits,
+      reference,
+      idempotencyKey: reference,
+      transactionMetadata,
+    });
+    const transactionId = settlement.transactionId;
+    const balanceAfter = settlement.balanceAfter;
     await client.query(
       `INSERT INTO ai_usage_records (id, merchant_id, customer_id, credit_account_id, credit_transaction_id,
                                     provider_id, model_id, request_id, pricing_mode, input_tokens, output_tokens,

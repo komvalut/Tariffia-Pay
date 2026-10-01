@@ -37,7 +37,7 @@ async function createDatabase(): Promise<Database> {
   );
   await pool.query(webhookMigration);
   for (const migration of ['0004_credit_engine.sql', '0005_ai_pricing.sql', '0006_invoices_receipts.sql',
-    '0007_subscriptions.sql', '0008_ai_provider_integration.sql']) {
+    '0007_subscriptions.sql', '0008_ai_provider_integration.sql', '0009_sms_otp.sql']) {
     await pool.query(await readFile(path.join(migrationsDir, migration), 'utf8'));
   }
   return {

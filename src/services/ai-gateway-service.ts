@@ -7,6 +7,7 @@ import {
   aiProviderErrorCode,
   aiProviderErrorMessage,
   normalizeAiProviderError,
+  type AiProvider,
 } from '../ai-provider.js';
 import type { AiProviderRegistry } from '../ai-providers/registry.js';
 import { newId } from '../security.js';
@@ -53,7 +54,13 @@ export class AiGatewayService {
 
     // Authorize the worst case before any provider call, then settle only the authoritative cost.
     const authorization = await this.authorize(request, maxOutputTokens, estimatedInputTokens);
-    const provider = this.providers.getConfiguredProvider(request.provider);
+    let provider: AiProvider;
+    try {
+      provider = this.providers.getConfiguredProvider(request.provider);
+    } catch (error) {
+      await this.failRequest(authorization.providerRequestId, error, 0);
+      throw this.toHttpError(error);
+    }
     const providerModel = authorization.model.provider_model || authorization.model.model_slug;
 
     const startedAt = Date.now();

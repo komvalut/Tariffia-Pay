@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { config, validateProductionConfiguration } from '../src/config.js';
 
 const aiApiKey = 'sk-live-0123456789abcdefghijklmnopqrstuvwxyz';
+const smsApiKey = 'sms-live-0123456789abcdefghijklmnopqrstuvwxyz';
+const smsBaseUrl = 'https://sms-gateway.example';
 
 const productionValues = {
   ...config,
@@ -12,6 +14,8 @@ const productionValues = {
   PUBLIC_BASE_URL: 'https://pay.example.com',
   WEBHOOK_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
   OPENAI_API_KEY: aiApiKey,
+  SMS_HTTP_API_KEY: smsApiKey,
+  SMS_HTTP_BASE_URL: smsBaseUrl,
 };
 
 const productionEnvironment = {
@@ -21,6 +25,8 @@ const productionEnvironment = {
   PUBLIC_BASE_URL: productionValues.PUBLIC_BASE_URL,
   WEBHOOK_ENCRYPTION_KEY: productionValues.WEBHOOK_ENCRYPTION_KEY,
   OPENAI_API_KEY: aiApiKey,
+  SMS_HTTP_API_KEY: smsApiKey,
+  SMS_HTTP_BASE_URL: smsBaseUrl,
 };
 
 describe('production security configuration', () => {
@@ -72,6 +78,36 @@ describe('production security configuration', () => {
     expect(() => validateProductionConfiguration(
       { ...productionValues, OPENAI_API_ENABLED: false, OPENAI_API_KEY: '' },
       { ...productionEnvironment, OPENAI_API_KEY: '' },
+    )).not.toThrow();
+  });
+
+  it('requires an explicit SMS provider credential and a safe provider origin in production', () => {
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, SMS_HTTP_BASE_URL: '' },
+      { ...productionEnvironment, SMS_HTTP_BASE_URL: '' },
+    )).toThrow(/SMS_HTTP_BASE_URL to be configured explicitly/);
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, SMS_HTTP_BASE_URL: 'http://sms-gateway.example' },
+      { ...productionEnvironment, SMS_HTTP_BASE_URL: 'http://sms-gateway.example' },
+    )).toThrow(/SMS_HTTP_BASE_URL.*HTTPS/);
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, SMS_HTTP_BASE_URL: 'https://user:secret@sms-gateway.example' },
+      { ...productionEnvironment, SMS_HTTP_BASE_URL: 'https://user:secret@sms-gateway.example' },
+    )).toThrow(/must not contain credentials/);
+    const { SMS_HTTP_API_KEY: _smsKey, ...missingSmsKey } = productionEnvironment;
+    expect(() => validateProductionConfiguration(productionValues, missingSmsKey))
+      .toThrow(/SMS_HTTP_API_KEY to be configured explicitly/);
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, SMS_HTTP_API_KEY: 'replace-with-provider-key' },
+      { ...productionEnvironment, SMS_HTTP_API_KEY: 'replace-with-provider-key' },
+    )).toThrow(/real provider credential/);
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, SMS_HTTP_SEND_PATH: 'v1/messages' },
+      { ...productionEnvironment, SMS_HTTP_SEND_PATH: 'v1/messages' },
+    )).toThrow(/relative paths/);
+    expect(() => validateProductionConfiguration(
+      { ...productionValues, SMS_PROVIDER_ENABLED: false, SMS_HTTP_API_KEY: '', SMS_HTTP_BASE_URL: '' },
+      { ...productionEnvironment, SMS_HTTP_API_KEY: '', SMS_HTTP_BASE_URL: '' },
     )).not.toThrow();
   });
 

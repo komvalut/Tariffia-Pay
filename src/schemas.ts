@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { aiProviderKinds } from './ai-provider.js';
+import { smsProviderKinds } from './sms-provider.js';
 
 export const addressSchema = z.string()
   .regex(/^0x[0-9a-fA-F]{40}$/, 'Must be a valid EVM address')
@@ -69,6 +70,8 @@ export const webhookEventTypes = [
   'subscription.billing_cycle.failed',
   'ai.request.completed',
   'ai.request.failed',
+  'sms.request.completed',
+  'sms.request.failed',
 ] as const;
 export type WebhookEventType = typeof webhookEventTypes[number];
 
@@ -210,3 +213,57 @@ export const recordAiUsageSchema = z.object({
   outputTokens: z.number().int().min(0).max(1_000_000_000_000).default(0),
   metadata: z.record(z.unknown()).default({}),
 }).strict();
+
+const e164Destination = z.string().trim().regex(/^\+[1-9]\d{7,14}$/, 'Destination must be an E.164 phone number');
+
+export const smsSendSchema = z.object({
+  requestId: z.string().trim().min(8).max(128),
+  service: aiSlug,
+  to: e164Destination,
+  message: z.string().min(1).max(1600),
+  customerId: z.string().uuid().optional(),
+  metadata: z.record(z.unknown()).default({}),
+}).strict();
+
+export const smsOtpSchema = z.object({
+  requestId: z.string().trim().min(8).max(128),
+  service: aiSlug,
+  to: e164Destination,
+  customerId: z.string().uuid().optional(),
+  metadata: z.record(z.unknown()).default({}),
+}).strict();
+
+export const createSmsProviderSchema = z.object({
+  slug: aiSlug,
+  name: z.string().trim().min(1).max(100),
+  enabled: z.boolean().default(true),
+  integration: z.enum(smsProviderKinds).default('http-sms'),
+  timeoutMs: z.number().int().min(1000).max(120_000).optional(),
+}).strict();
+
+export const updateSmsProviderSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  enabled: z.boolean().optional(),
+}).strict().refine((input) => Object.values(input).some((value) => value !== undefined), {
+  message: 'At least one provider field must be provided',
+});
+
+const otpMessageTemplate = z.string().trim().min(1).max(480)
+  .refine((value) => value.includes('{code}'), 'The OTP template must contain the {code} placeholder');
+
+export const createSmsServiceSchema = z.object({
+  slug: aiSlug,
+  name: z.string().trim().min(1).max(120),
+  type: z.enum(['otp_sms']).default('otp_sms'),
+  enabled: z.boolean().default(true),
+  customerPricePerSmsUsd: aiUsdRate.nullable().default(null),
+  providerCostPerSmsUsd: aiUsdRate.default('0'),
+  markupBps: z.number().int().min(0).max(100_000).default(0),
+  otpLength: z.number().int().min(4).max(12).default(6),
+  otpExpirySeconds: z.number().int().min(60).max(86_400).default(300),
+  otpMessageTemplate: otpMessageTemplate.default('Your verification code is {code}'),
+  maxMessageLength: z.number().int().min(1).max(1600).default(480),
+  metadata: z.record(z.unknown()).default({}),
+}).strict();
+
+export const updateSmsServiceSchema = createSmsServiceSchema;
