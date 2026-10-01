@@ -56,6 +56,16 @@ export const webhookEventTypes = [
   'ai.usage.recorded',
   'invoice.issued',
   'receipt.issued',
+  'subscription.created',
+  'subscription.activated',
+  'subscription.paused',
+  'subscription.resumed',
+  'subscription.cancelled',
+  'subscription.past_due',
+  'subscription.expired',
+  'subscription.billing_cycle.created',
+  'subscription.billing_cycle.paid',
+  'subscription.billing_cycle.failed',
 ] as const;
 export type WebhookEventType = typeof webhookEventTypes[number];
 
@@ -85,6 +95,37 @@ export const updateWebhookSchema = z.object({
 const positiveDecimal = z.string()
   .regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/, 'Amount must be a decimal with up to 30 integer and 6 fractional places')
   .refine((value) => !/^0(?:\.0+)?$/.test(value), 'Amount must be greater than zero');
+
+const subscriptionInterval = z.enum(['DAY', 'WEEK', 'MONTH', 'YEAR']);
+export const createSubscriptionPlanSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).default(''),
+  amount: positiveDecimal,
+  currency: z.string().trim().regex(/^[A-Z][A-Z0-9]{2,11}$/).default('USDC'),
+  interval: subscriptionInterval,
+  intervalCount: z.number().int().min(1).max(12).default(1),
+  trialDays: z.number().int().min(0).max(365).default(0),
+  enabled: z.boolean().default(true),
+}).strict();
+
+export const updateSubscriptionPlanSchema = createSubscriptionPlanSchema.partial().strict()
+  .refine((input) => Object.values(input).some((value) => value !== undefined), {
+    message: 'At least one plan field must be provided',
+  });
+
+export const createSubscriptionSchema = z.object({
+  planId: z.string().uuid(),
+  customerId: z.string().uuid(),
+  adapter: z.string().trim().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
+  billingMode: z.enum(['MANUAL', 'AUTOMATIC']).default('MANUAL'),
+  endsAt: z.string().datetime().optional(),
+}).strict();
+
+export const subscriptionActionSchema = z.object({
+  action: z.enum(['pause', 'resume', 'cancel']),
+}).strict();
+
+export const manualSubscriptionRenewalSchema = z.object({}).strict();
 
 export const createCreditTopupSchema = z.object({
   customerId: z.string().uuid(),

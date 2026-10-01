@@ -8,6 +8,7 @@ export interface PaymentAdapterCapabilities {
   readonly paymentRequests: boolean;
   readonly transactionVerification: boolean;
   readonly statusPolling: boolean;
+  readonly recurringPayments: boolean;
   readonly automaticDetection: boolean;
   readonly refunds: boolean;
   readonly paymentRequestFormat: 'wallet' | 'invoice';

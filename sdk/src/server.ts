@@ -14,7 +14,21 @@ export type WebhookEventType =
   | 'credit.deducted'
   | 'ai.usage.recorded'
   | 'invoice.issued'
-  | 'receipt.issued';
+  | 'receipt.issued'
+  | 'subscription.created'
+  | 'subscription.activated'
+  | 'subscription.paused'
+  | 'subscription.resumed'
+  | 'subscription.cancelled'
+  | 'subscription.past_due'
+  | 'subscription.expired'
+  | 'subscription.billing_cycle.created'
+  | 'subscription.billing_cycle.paid'
+  | 'subscription.billing_cycle.failed';
+
+export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE';
+export type SubscriptionBillingMode = 'MANUAL' | 'AUTOMATIC';
+export type BillingInterval = 'DAY' | 'WEEK' | 'MONTH' | 'YEAR';
 
 export interface TariffiaClientOptions {
   /** Merchant API key. Keep this server-side and load it from a secret store or environment. */
@@ -89,6 +103,7 @@ export interface PaymentMethodOption {
     paymentRequests: boolean;
     transactionVerification: boolean;
     statusPolling: boolean;
+    recurringPayments: boolean;
     automaticDetection: boolean;
     refunds: boolean;
     paymentRequestFormat: 'wallet' | 'invoice';
@@ -153,6 +168,81 @@ export interface PublicReceipt {
   transactionId: string;
   paidAt: string;
   issuedAt: string;
+}
+
+export interface SubscriptionPlanInput {
+  name: string;
+  description?: string;
+  amount: string;
+  currency?: string;
+  interval: BillingInterval;
+  intervalCount?: number;
+  trialDays?: number;
+  enabled?: boolean;
+}
+
+export interface SubscriptionPlan extends Required<Omit<SubscriptionPlanInput, 'description' | 'currency' | 'intervalCount' | 'trialDays' | 'enabled'>> {
+  id: string;
+  merchantId: string;
+  description: string;
+  currency: string;
+  intervalCount: number;
+  trialDays: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Subscription {
+  id: string;
+  merchantId: string;
+  customerId: string;
+  customer: { name: string | null; email: string | null };
+  planId: string;
+  planName: string;
+  paymentMethod: { id: string; name: string };
+  billingMode: SubscriptionBillingMode;
+  automaticRenewalAvailable: boolean;
+  amount: string;
+  currency: string;
+  interval: BillingInterval;
+  intervalCount: number;
+  trialDays: number;
+  status: SubscriptionStatus;
+  startsAt: string;
+  trialEndsAt: string | null;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  nextBillingAt: string;
+  endsAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SubscriptionBillingAttempt {
+  id: string;
+  billingCycleId: string;
+  attemptNumber: number;
+  orderId: string | null;
+  paymentId: string | null;
+  status: 'CREATING' | 'PENDING' | 'PAID' | 'FAILED' | 'EXPIRED';
+  failureReason: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface SubscriptionBillingCycle {
+  id: string;
+  subscriptionId: string;
+  cycleNumber: number;
+  periodStart: string;
+  periodEnd: string;
+  amount: string;
+  currency: string;
+  status: 'CREATING' | 'PENDING' | 'PAID' | 'FAILED' | 'EXPIRED';
+  paidAt: string | null;
+  attempts: SubscriptionBillingAttempt[];
+  createdAt: string;
 }
 
 export interface PaymentLinkResult {
@@ -313,6 +403,66 @@ export class TariffiaClient {
 
   getPaymentMethods(options: RequestOptions = {}): Promise<{ methods: PaymentMethodOption[] }> {
     return this.request('/v1/public/payment-methods', 'GET', undefined, options);
+  }
+
+  createSubscriptionPlan(input: SubscriptionPlanInput, options: RequestOptions = {}): Promise<{ plan: SubscriptionPlan }> {
+    return this.request('/v1/subscription-plans', 'POST', input, options);
+  }
+
+  getSubscriptionPlans(options: RequestOptions = {}): Promise<{ plans: SubscriptionPlan[] }> {
+    return this.request('/v1/subscription-plans', 'GET', undefined, options);
+  }
+
+  updateSubscriptionPlan(planId: string, input: Partial<SubscriptionPlanInput>, options: RequestOptions = {}): Promise<{ plan: SubscriptionPlan }> {
+    return this.request(`/v1/subscription-plans/${encodeURIComponent(planId)}`, 'PUT', input, options);
+  }
+
+  createSubscription(input: {
+    planId: string;
+    customerId: string;
+    adapter?: string;
+    billingMode?: SubscriptionBillingMode;
+    endsAt?: string;
+  }, options: IdempotentRequestOptions): Promise<{
+    subscription: Subscription;
+    billingCycles: SubscriptionBillingCycle[];
+    payment: Payment | null;
+    order: Order | null;
+    checkoutUrl: string | null;
+    qrUrl: string | null;
+  }> {
+    return this.request('/v1/subscriptions', 'POST', input, options, options.idempotencyKey);
+  }
+
+  getSubscriptions(options: RequestOptions = {}): Promise<{ subscriptions: Subscription[] }> {
+    return this.request('/v1/subscriptions', 'GET', undefined, options);
+  }
+
+  getSubscription(subscriptionId: string, options: RequestOptions = {}): Promise<{ subscription: Subscription }> {
+    return this.request(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, 'GET', undefined, options);
+  }
+
+  updateSubscription(
+    subscriptionId: string,
+    action: 'pause' | 'resume' | 'cancel',
+    options: RequestOptions = {},
+  ): Promise<{ subscription: Subscription }> {
+    return this.request(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, 'PATCH', { action }, options);
+  }
+
+  renewSubscription(
+    subscriptionId: string,
+    options: IdempotentRequestOptions,
+  ): Promise<{ subscription: Subscription; billingCycles: SubscriptionBillingCycle[]; payment?: Payment; order?: Order; checkoutUrl?: string; qrUrl?: string }> {
+    return this.request(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}/renew`, 'POST', {}, options, options.idempotencyKey);
+  }
+
+  getSubscriptionBillingCycles(subscriptionId: string, options: RequestOptions = {}): Promise<{ billingCycles: SubscriptionBillingCycle[] }> {
+    return this.request(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}/billing-cycles`, 'GET', undefined, options);
+  }
+
+  getCustomerSubscriptions(customerId: string, options: RequestOptions = {}): Promise<{ subscriptions: Subscription[] }> {
+    return this.request(`/v1/customers/${encodeURIComponent(customerId)}/subscriptions`, 'GET', undefined, options);
   }
 
   getInvoices(limit = 50, options: RequestOptions = {}): Promise<{ invoices: Invoice[] }> {

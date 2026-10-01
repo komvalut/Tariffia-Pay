@@ -68,6 +68,7 @@ const manifest: PaymentAdapterManifest = {
     paymentRequests: true,
     transactionVerification: true,
     statusPolling: false,
+    recurringPayments: false,
     automaticDetection: true,
     refunds: false,
     paymentRequestFormat: 'wallet',

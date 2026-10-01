@@ -42,7 +42,8 @@ describe('Lightning payment adapter foundation', () => {
     expect(summary).toMatchObject({
       name: 'Bitcoin Lightning', isDefault: false, status: 'disabled', lifecycle: 'ready',
       capabilities: {
-        paymentRequests: true, transactionVerification: true, statusPolling: true, automaticDetection: false,
+        paymentRequests: true, transactionVerification: true, statusPolling: true, recurringPayments: false,
+        automaticDetection: false,
         refunds: false, paymentRequestFormat: 'invoice', currencies: ['SAT'],
       },
     });
@@ -184,7 +185,9 @@ describe('Lightning payment adapter foundation', () => {
     });
     await registry.initialize();
     expect(registry.getDefaultForNewPayments()).toBe(usdc);
-    expect(usdc.manifest).toMatchObject({ id: 'usdc', capabilities: { currencies: ['USDC'], networks: ['base'] } });
+    expect(usdc.manifest).toMatchObject({
+      id: 'usdc', capabilities: { currencies: ['USDC'], networks: ['base'], recurringPayments: false },
+    });
     await registry.shutdown();
   });
 });

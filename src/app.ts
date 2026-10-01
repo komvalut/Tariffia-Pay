@@ -25,10 +25,12 @@ import { adminAiRoutes } from './modules/admin-ai.js';
 import { aiRoutes } from './modules/ai.js';
 import { dashboardRoutes } from './modules/dashboard.js';
 import { adminPaymentAdapterRoutes } from './modules/admin-payment-adapters.js';
+import { subscriptionRoutes } from './modules/subscriptions.js';
 import { billingDocumentRoutes } from './modules/billing-documents.js';
 import { safeErrorMetadata } from './safe-logging.js';
 import { createDefaultPaymentAdapterRegistry } from './payment-adapters/default-registry.js';
 import { PaymentAdapterRegistry } from './payment-adapters/registry.js';
+import { SubscriptionService } from './services/subscription-service.js';
 
 type AppOptions = {
   db: Database;
@@ -52,8 +54,10 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, v
   const paymentCore = new PaymentCoreService(db, adapters);
   const credits = creditEngine ?? new CreditEngine(db);
   const aiPricing = new AiPricingEngine(db);
+  const subscriptions = new SubscriptionService(db, paymentCore, adapters);
   await credits.initialize();
   paymentVerification.addLifecycleHandler(credits);
+  paymentVerification.addLifecycleHandler(subscriptions);
   const proxySetting = config.TRUST_PROXY.trim();
   const trustProxy = proxySetting === 'true' ? true : proxySetting === 'false' || !proxySetting
     ? false
@@ -136,8 +140,24 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, v
   await app.register(adminCreditRoutes, { db, credits });
   await app.register(adminAiRoutes, { db });
   await app.register(adminPaymentAdapterRoutes, { adapters });
+  await app.register(subscriptionRoutes, { db, subscriptions });
   await app.register(aiRoutes, { db, aiPricing });
   await app.register(ledgerRoutes, { db });
   await app.register(dashboardRoutes, { db });
+  if (config.NODE_ENV !== 'test') {
+    let billingRun: Promise<void> | undefined;
+    const billingTimer = setInterval(() => {
+      if (billingRun) return;
+      billingRun = subscriptions.runAutomaticRenewals()
+        .then(() => undefined)
+        .catch((error) => app.log.error(safeErrorMetadata(error), 'Automatic subscription billing failed'))
+        .finally(() => { billingRun = undefined; });
+    }, config.SUBSCRIPTION_BILLING_INTERVAL_MS);
+    billingTimer.unref();
+    app.addHook('onClose', async () => {
+      clearInterval(billingTimer);
+      await billingRun;
+    });
+  }
   return app;
 }

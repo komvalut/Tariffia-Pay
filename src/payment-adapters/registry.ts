@@ -97,6 +97,11 @@ export class PaymentAdapterRegistry {
     return this.entries.get(id)?.adapter.manifest;
   }
 
+  isEnabled(id: string): boolean {
+    const entry = this.entries.get(id);
+    return entry?.configuration.enabled === true && entry.lifecycle === 'ready';
+  }
+
   normalizeTransactionId(id: string, transactionId: string): string {
     const adapter = this.getForVerification(id);
     try {
@@ -244,7 +249,7 @@ export class PaymentAdapterRegistry {
         !manifest.name.trim() || !manifest.version.trim() || !manifest.description.trim() ||
         typeof adapter.normalizeTransactionId !== 'function' ||
         !capabilities ||
-        ['paymentRequests', 'transactionVerification', 'statusPolling', 'automaticDetection', 'refunds']
+        ['paymentRequests', 'transactionVerification', 'statusPolling', 'recurringPayments', 'automaticDetection', 'refunds']
           .some((key) => typeof capabilities[key as keyof typeof capabilities] !== 'boolean') ||
         !['wallet', 'invoice'].includes(capabilities.paymentRequestFormat) ||
         !Array.isArray(capabilities.currencies) || capabilities.currencies.length === 0 ||

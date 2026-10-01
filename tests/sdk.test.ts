@@ -57,7 +57,7 @@ describe('Tariffia TypeScript SDK', () => {
     const { calls, fetcher } = fakeFetch([
       jsonResponse({ methods: [{
         id: 'lightning', name: 'Bitcoin Lightning', description: 'Lightning invoice payments',
-        capabilities: { paymentRequests: true, transactionVerification: true, statusPolling: true,
+        capabilities: { paymentRequests: true, transactionVerification: true, statusPolling: true, recurringPayments: false,
           automaticDetection: false, refunds: false, paymentRequestFormat: 'invoice',
           currencies: ['SAT'], networks: ['lightning-mainnet'] },
       }] }),

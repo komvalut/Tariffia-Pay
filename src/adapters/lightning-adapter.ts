@@ -47,6 +47,7 @@ const manifest: PaymentAdapterManifest = {
     paymentRequests: true,
     transactionVerification: true,
     statusPolling: true,
+    recurringPayments: false,
     automaticDetection: false,
     refunds: false,
     paymentRequestFormat: 'invoice',

@@ -18,6 +18,9 @@ import { LightningAdapter } from '../src/adapters/lightning-adapter.js';
 import type { LightningAdapterSettings } from '../src/adapters/lightning-adapter.js';
 import { MockLightningProvider } from './fixtures/mock-lightning-provider.js';
 import { PaymentVerificationService } from '../src/services/payment-verification-service.js';
+import { PaymentCoreService } from '../src/services/payment-core-service.js';
+import { SubscriptionService } from '../src/services/subscription-service.js';
+import { addBillingInterval } from '../src/services/billing-interval.js';
 import { UsdcPaymentDetector } from '../src/services/usdc-payment-detector.js';
 import { WebhookDeliveryWorker } from '../src/services/webhook-delivery-worker.js';
 import { checkoutUrlForPayment } from '../src/checkout-links.js';
@@ -86,6 +89,7 @@ describe('Tariffia merchant and payment API', () => {
     await pool.query(await readFile(path.join(migrationsDir, '0004_credit_engine.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0005_ai_pricing.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0006_invoices_receipts.sql'), 'utf8'));
+    await pool.query(await readFile(path.join(migrationsDir, '0007_subscriptions.sql'), 'utf8'));
 
     db = {
       query: (text, values = []) => pool.query(text, values),
@@ -111,7 +115,8 @@ describe('Tariffia merchant and payment API', () => {
       manifest: {
         id: 'usdc', name: 'Base USDC', version: 'test', description: 'Test Base USDC adapter',
         capabilities: {
-          paymentRequests: true, transactionVerification: true, statusPolling: false, automaticDetection: true,
+          paymentRequests: true, transactionVerification: true, statusPolling: false, recurringPayments: false,
+          automaticDetection: true,
           refunds: false, paymentRequestFormat: 'wallet',
           currencies: ['USDC'], networks: ['base'],
         },
@@ -646,6 +651,244 @@ describe('Tariffia merchant and payment API', () => {
     expect(allInvoices.json().invoices).toHaveLength(2);
     expect(new Set(allInvoices.json().invoices.map((item: { invoiceNumber: string }) => item.invoiceNumber)).size).toBe(2);
     expect(allReceipts.json().receipts).toHaveLength(2);
+  });
+
+  it('creates plans and manual subscriptions with trials, capability checks, and lifecycle controls', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Plan Store', email: 'plan-store@example.com', walletAddress: '0x5656565656565656565656565656565656565656' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Plan Customer', email: 'plan-customer@example.com' },
+    });
+    const badPlan = await app.inject({
+      method: 'POST', url: '/v1/subscription-plans', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Invalid', amount: '0', interval: 'MONTH', intervalCount: 0 },
+    });
+    expect(badPlan.statusCode).toBe(400);
+    const planResponse = await app.inject({
+      method: 'POST', url: '/v1/subscription-plans', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Monthly', description: 'Monthly service', amount: '12.50', interval: 'MONTH', intervalCount: 1 },
+    });
+    expect(planResponse.statusCode).toBe(201);
+    const plan = planResponse.json().plan;
+    expect(plan).toMatchObject({ amount: '12.5', currency: 'USDC', interval: 'MONTH', intervalCount: 1, trialDays: 0 });
+
+    const unsupportedAuto = await app.inject({
+      method: 'POST', url: '/v1/subscriptions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'subscription-auto-not-supported' },
+      payload: { planId: plan.id, customerId: customer.json().customer.id, adapter: 'usdc', billingMode: 'AUTOMATIC' },
+    });
+    expect(unsupportedAuto.statusCode).toBe(422);
+    expect(unsupportedAuto.json().error).toBe('recurring_unavailable');
+
+    const subscriptionInput = { planId: plan.id, customerId: customer.json().customer.id, adapter: 'usdc', billingMode: 'MANUAL' };
+    const created = await app.inject({
+      method: 'POST', url: '/v1/subscriptions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'subscription-manual-create-001' },
+      payload: subscriptionInput,
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().subscription).toMatchObject({ status: 'PAST_DUE', billingMode: 'MANUAL', paymentMethod: { id: 'usdc' } });
+    expect(created.json().payment.status).toBe('PENDING');
+    expect(created.json().billingCycles).toMatchObject([{ cycleNumber: 1, status: 'PENDING', attempts: [{ status: 'PENDING' }] }]);
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(1);
+
+    const replay = await app.inject({
+      method: 'POST', url: '/v1/subscriptions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'subscription-manual-create-001' },
+      payload: subscriptionInput,
+    });
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json().subscription.id).toBe(created.json().subscription.id);
+    expect(replay.json().payment.id).toBe(created.json().payment.id);
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(1);
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 850n };
+    const activated = await app.inject({
+      method: 'POST', url: `/v1/payments/${created.json().payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionHash: `0x${'9'.repeat(64)}` },
+    });
+    expect(activated.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${created.json().subscription.id}`, headers: { authorization: `Bearer ${apiKey}` },
+    })).json().subscription.status).toBe('ACTIVE');
+    const earlyRenewal = await app.inject({
+      method: 'POST', url: `/v1/subscriptions/${created.json().subscription.id}/renew`,
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'subscription-renew-too-early' }, payload: {},
+    });
+    expect(earlyRenewal.statusCode).toBe(409);
+
+    const trialPlan = await app.inject({
+      method: 'POST', url: '/v1/subscription-plans', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Trial', amount: '5.00', interval: 'WEEK', intervalCount: 2, trialDays: 14 },
+    });
+    const trialSubscription = await app.inject({
+      method: 'POST', url: '/v1/subscriptions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'subscription-trial-create-001' },
+      payload: { planId: trialPlan.json().plan.id, customerId: customer.json().customer.id },
+    });
+    expect(trialSubscription.statusCode).toBe(201);
+    expect(trialSubscription.json()).toMatchObject({
+      subscription: { status: 'ACTIVE', trialDays: 14 }, payment: null, order: null, billingCycles: [],
+    });
+    expect(Date.parse(trialSubscription.json().subscription.trialEndsAt)).toBeGreaterThan(Date.now());
+    const trialSubscriptionId = trialSubscription.json().subscription.id as string;
+    await db.query('UPDATE subscriptions SET ends_at = $2 WHERE id = $1', [trialSubscriptionId, new Date(Date.now() - 1000)]);
+    const lifecycle = new SubscriptionService(db, new PaymentCoreService(db, adapters), adapters);
+    await lifecycle.runAutomaticRenewals();
+    expect((await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${trialSubscriptionId}`, headers: { authorization: `Bearer ${apiKey}` },
+    })).json().subscription.status).toBe('EXPIRED');
+
+    const subscriptionId = created.json().subscription.id as string;
+    expect((await app.inject({
+      method: 'GET', url: `/v1/customers/${customer.json().customer.id}/subscriptions`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    })).json().subscriptions).toHaveLength(2);
+    const otherMerchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Other Plan Store', email: 'other-plan@example.com', walletAddress: '0x6767676767676767676767676767676767676767' },
+    });
+    const crossTenant = await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${subscriptionId}`,
+      headers: { authorization: `Bearer ${otherMerchant.json().apiKey}` },
+    });
+    expect(crossTenant.statusCode).toBe(404);
+
+    expect((await app.inject({
+      method: 'PATCH', url: `/v1/subscriptions/${subscriptionId}`, headers: { authorization: `Bearer ${apiKey}` },
+      payload: { action: 'pause' },
+    })).json().subscription.status).toBe('PAUSED');
+    expect((await app.inject({
+      method: 'PATCH', url: `/v1/subscriptions/${subscriptionId}`, headers: { authorization: `Bearer ${apiKey}` },
+      payload: { action: 'resume' },
+    })).json().subscription.status).toBe('ACTIVE');
+    expect((await app.inject({
+      method: 'PATCH', url: `/v1/subscriptions/${subscriptionId}`, headers: { authorization: `Bearer ${apiKey}` },
+      payload: { action: 'cancel' },
+    })).json().subscription.status).toBe('CANCELLED');
+    const admin = await app.inject({
+      method: 'GET', url: '/v1/admin/subscriptions',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+    });
+    expect(admin.json().subscriptions).toHaveLength(2);
+  });
+
+  it('records failed and expired subscription attempts and requires a new idempotency key for retry', async () => {
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Past Due Store', email: 'past-due@example.com', walletAddress: '0x7878787878787878787878787878787878787878' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'past-due-customer' },
+    });
+    const plan = await app.inject({
+      method: 'POST', url: '/v1/subscription-plans', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Past due plan', amount: '3.00', interval: 'MONTH' },
+    });
+    const created = await app.inject({
+      method: 'POST', url: '/v1/subscriptions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'past-due-subscription-001' },
+      payload: { planId: plan.json().plan.id, customerId: customer.json().customer.id },
+    });
+    const subscriptionId = created.json().subscription.id as string;
+    const firstPaymentId = created.json().payment.id as string;
+    verificationResult = { state: 'failed', reason: 'matching USDC transfer reverted', blockNumber: 700n };
+    const failed = await app.inject({
+      method: 'POST', url: `/v1/payments/${firstPaymentId}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionHash: `0x${'d'.repeat(64)}` },
+    });
+    expect(failed.statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${subscriptionId}`, headers: { authorization: `Bearer ${apiKey}` },
+    })).json().subscription.status).toBe('PAST_DUE');
+
+    const retry = await app.inject({
+      method: 'POST', url: `/v1/subscriptions/${subscriptionId}/renew`,
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'past-due-retry-001' }, payload: {},
+    });
+    expect(retry.statusCode).toBe(201);
+    expect(retry.json().billingCycles).toHaveLength(1);
+    expect(retry.json().billingCycles[0].attempts).toHaveLength(2);
+    const repeat = await app.inject({
+      method: 'POST', url: `/v1/subscriptions/${subscriptionId}/renew`,
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'past-due-retry-001' }, payload: {},
+    });
+    expect(repeat.json().payment.id).toBe(retry.json().payment.id);
+    expect(retry.json().billingCycles[0].attempts.map((attempt: { attemptNumber: number }) => attempt.attemptNumber))
+      .toEqual([2, 1]);
+
+    await db.query('UPDATE payments SET expires_at = $2 WHERE id = $1', [retry.json().payment.id, new Date(Date.now() - 60_000)]);
+    const lifecycle = new SubscriptionService(db, new PaymentCoreService(db, adapters), adapters);
+    const expirationWorker = new WebhookDeliveryWorker(db, fetch, [lifecycle]);
+    await expirationWorker.runOnce();
+    const history = await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${subscriptionId}/billing-cycles`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(history.json().billingCycles[0]).toMatchObject({ status: 'EXPIRED', attempts: [{ status: 'EXPIRED' }, { status: 'FAILED' }] });
+    expect((await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${subscriptionId}`, headers: { authorization: `Bearer ${apiKey}` },
+    })).json().subscription.status).toBe('PAST_DUE');
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs automatic cycle creation only for adapters declaring recurring support and does not duplicate a cycle', async () => {
+    Object.defineProperty(paymentAdapter, 'manifest', {
+      value: {
+        ...paymentAdapter.manifest,
+        capabilities: { ...paymentAdapter.manifest.capabilities, recurringPayments: true },
+      },
+    });
+    const merchant = await app.inject({
+      method: 'POST', url: '/v1/admin/merchants',
+      headers: { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' },
+      payload: { name: 'Auto Store', email: 'auto-store@example.com', walletAddress: '0x8989898989898989898989898989898989898989' },
+    });
+    const apiKey = merchant.json().apiKey as string;
+    const customer = await app.inject({
+      method: 'POST', url: '/v1/customers', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { externalId: 'auto-customer' },
+    });
+    const plan = await app.inject({
+      method: 'POST', url: '/v1/subscription-plans', headers: { authorization: `Bearer ${apiKey}` },
+      payload: { name: 'Auto plan', amount: '1.00', interval: 'MONTH' },
+    });
+    const created = await app.inject({
+      method: 'POST', url: '/v1/subscriptions',
+      headers: { authorization: `Bearer ${apiKey}`, 'idempotency-key': 'auto-subscription-create-001' },
+      payload: { planId: plan.json().plan.id, customerId: customer.json().customer.id, adapter: 'usdc', billingMode: 'AUTOMATIC' },
+    });
+    expect(created.statusCode).toBe(201);
+    verificationResult = { state: 'verified', confirmations: 12, blockNumber: 901n };
+    const payment = created.json().payment;
+    const confirmed = await app.inject({
+      method: 'POST', url: `/v1/payments/${payment.id}/verify`,
+      headers: { authorization: `Bearer ${apiKey}` }, payload: { transactionHash: `0x${'e'.repeat(64)}` },
+    });
+    expect(confirmed.statusCode).toBe(200);
+    const subscriptionId = created.json().subscription.id as string;
+    await db.query('UPDATE subscriptions SET next_billing_at = $2 WHERE id = $1', [subscriptionId, new Date(Date.now() - 1000)]);
+
+    const billing = new SubscriptionService(db, new PaymentCoreService(db, adapters), adapters);
+    await expect(billing.runAutomaticRenewals()).resolves.toMatchObject({ due: 1, started: 1 });
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(2);
+    await expect(billing.runAutomaticRenewals()).resolves.toMatchObject({ due: 1, started: 1 });
+    expect(paymentAdapter.createRequest).toHaveBeenCalledTimes(2);
+    const cycles = await app.inject({
+      method: 'GET', url: `/v1/subscriptions/${subscriptionId}/billing-cycles`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(cycles.json().billingCycles).toHaveLength(2);
+    expect(cycles.json().billingCycles[0].status).toBe('PENDING');
+    expect(cycles.json().billingCycles[1].status).toBe('PAID');
   });
 
   it('does not confirm mismatched on-chain transfers', async () => {

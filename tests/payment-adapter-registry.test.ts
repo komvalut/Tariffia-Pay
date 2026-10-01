@@ -20,6 +20,7 @@ const manifest: PaymentAdapterManifest = {
     paymentRequests: true,
     transactionVerification: true,
     statusPolling: false,
+    recurringPayments: false,
     automaticDetection: false,
     refunds: false,
     paymentRequestFormat: 'wallet',
