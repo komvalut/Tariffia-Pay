@@ -47,8 +47,36 @@ export interface AiProviderHealth {
 }
 
 export interface AiChatMessage {
-  readonly role: 'system' | 'user' | 'assistant';
+  readonly role: 'system' | 'user' | 'assistant' | 'tool';
   readonly content: string;
+  /** Present on `tool` role messages to identify the tool call being answered. */
+  readonly toolCallId?: string;
+  /** Optional participant name for `tool` role messages. */
+  readonly name?: string;
+  /** Tool calls attached to an `assistant` message in a multi-turn conversation. */
+  readonly toolCalls?: readonly AiToolCall[];
+}
+
+export interface AiToolFunctionDefinition {
+  readonly name: string;
+  readonly description?: string;
+  /** JSON-schema style parameter description. Passthrough only; Tariffia never interprets it. */
+  readonly parameters?: Record<string, unknown>;
+}
+
+export interface AiToolDefinition {
+  readonly type: 'function';
+  readonly function: AiToolFunctionDefinition;
+}
+
+export interface AiToolCall {
+  readonly id: string;
+  readonly type: 'function';
+  readonly function: {
+    readonly name: string;
+    /** Provider-supplied JSON argument string. Returned to the merchant, never executed. */
+    readonly arguments: string;
+  };
 }
 
 export interface AiChatCompletionRequest {
@@ -58,6 +86,9 @@ export interface AiChatCompletionRequest {
   readonly messages: readonly AiChatMessage[];
   readonly maxOutputTokens: number;
   readonly temperature?: number;
+  /** Merchant-defined tools offered to the provider. Passthrough only; never executed by Tariffia. */
+  readonly tools?: readonly AiToolDefinition[];
+  readonly toolChoice?: 'auto' | 'none' | 'required';
 }
 
 export interface AiNormalizedUsage {
@@ -74,6 +105,24 @@ export interface AiChatCompletion {
   readonly finishReason: string | null;
   readonly message: AiChatMessage;
   readonly usage: AiNormalizedUsage;
+  /** Normalized tool calls requested by the provider. Returned to the merchant, never executed. */
+  readonly toolCalls: readonly AiToolCall[];
+}
+
+/** Normalized events emitted by a provider stream in arrival order. */
+export type AiStreamEvent =
+  | { type: 'chunk'; content: string }
+  | { type: 'tool_call'; toolCall: AiToolCall }
+  | { type: 'usage'; usage: AiNormalizedUsage }
+  | { type: 'finish'; finishReason: string | null };
+
+export interface AiChatCompletionStream {
+  readonly providerRequestId: string;
+  readonly providerResponseId: string;
+  /** Normalized stream events. Streamed chunks are never treated as authoritative billing data. */
+  events(): AsyncIterable<AiStreamEvent>;
+  /** Terminates the provider request. Later iteration throws an abort-style error. */
+  abort(reason?: string): void;
 }
 
 export interface AiProviderModel {
@@ -92,6 +141,8 @@ export interface AiProvider {
   isConfigured(): boolean;
   health(): Promise<AiProviderHealth>;
   createChatCompletion(request: AiChatCompletionRequest): Promise<AiChatCompletion>;
+  /** Streaming variant. Providers without the streaming capability must not implement it. */
+  createChatCompletionStream?(request: AiChatCompletionRequest): Promise<AiChatCompletionStream>;
   listModels(): Promise<readonly AiProviderModel[]>;
 }
 

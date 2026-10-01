@@ -138,6 +138,7 @@ export class AiProviderRegistry {
         ['chatCompletions', 'streaming', 'toolCalls', 'systemPrompts', 'reportsInputTokens', 'reportsOutputTokens']
           .some((key) => typeof capabilities[key as keyof typeof capabilities] !== 'boolean') ||
         !Number.isInteger(capabilities.maxOutputTokens) || capabilities.maxOutputTokens < 1 ||
+        (capabilities.streaming && typeof provider.createChatCompletionStream !== 'function') ||
         typeof provider.isConfigured !== 'function' ||
         typeof provider.createChatCompletion !== 'function' ||
         typeof provider.listModels !== 'function') {

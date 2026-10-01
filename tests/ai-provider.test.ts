@@ -211,6 +211,144 @@ describe('OpenAI-compatible provider', () => {
   });
 });
 
+describe('OpenAI-compatible provider streaming', () => {
+  const sseFrames = [
+    'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hel"}}]}\n\n',
+    'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"lo"}}]}\n\n',
+    'data: {"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_w","arguments":"{\\"ci"}}]}}]}\n\n',
+    'data: {"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\\":\\"Belgrade\\"}"}}]}}]}\n\n',
+    'data: {"id":"chatcmpl-1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+    'data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34}}\n\n',
+    'data: [DONE]\n\n',
+  ];
+
+  /**
+   * A pull-based SSE body that mirrors a network stream: frames arrive one pull at a
+   * time, optional delays stall between frames, and aborting the fetch signal errors
+   * the body exactly like an aborted undici response.
+   */
+  function sseResponse(frames: string[], options: { signal?: AbortSignal; delayMs?: number; stallAfter?: number } = {}) {
+    const encoder = new TextEncoder();
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let index = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      start(owned) { controller = owned; },
+      async pull(owned) {
+        if (index === frames.length) {
+          owned.close();
+          return;
+        }
+        if (options.stallAfter !== undefined && index === options.stallAfter) {
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+        } else if (options.delayMs) {
+          await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+        }
+        if (index === frames.length) {
+          owned.close();
+          return;
+        }
+        owned.enqueue(encoder.encode(frames[index]));
+        index += 1;
+      },
+    });
+    options.signal?.addEventListener('abort', () => {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      controller?.error(error);
+    }, { once: true });
+    return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }
+
+  function streamingFetch(
+    frames: string[],
+    options: { delayMs?: number; stallAfter?: number } = {},
+  ): typeof fetch {
+    return (async (_url: string | URL | Request, init?: RequestInit) =>
+      sseResponse(frames, { ...options, signal: init?.signal })) as unknown as typeof fetch;
+  }
+
+  async function streamWith(frames: string[], settings: Record<string, unknown> = { apiKey, baseUrl: 'https://ai.example' }, options: { delayMs?: number; stallAfter?: number } = {}) {
+    const provider = new OpenAiProvider(streamingFetch(frames, options));
+    await provider.initialize(settings);
+    return provider;
+  }
+
+  it('parses SSE frames into normalized chunk, tool-call, usage and finish events', async () => {
+    const provider = await streamWith(sseFrames);
+    const stream = await provider.createChatCompletionStream(completionRequest({ requestId: 'stream-0001' }));
+    const events: unknown[] = [];
+    for await (const event of stream.events()) events.push(event);
+    expect(events).toEqual([
+      { type: 'chunk', content: 'Hel' },
+      { type: 'chunk', content: 'lo' },
+      {
+        type: 'tool_call',
+        toolCall: { id: 'call_1', type: 'function', function: { name: 'get_w', arguments: '{"city":"Belgrade"}' } },
+      },
+      { type: 'usage', usage: { inputTokens: 12, outputTokens: 34, authoritative: true } },
+      { type: 'finish', finishReason: 'tool_calls' },
+    ]);
+    expect(stream.providerRequestId).toBe('stream-0001');
+    expect(stream.providerResponseId).toBe('chatcmpl-1');
+  });
+
+  it('sends stream options, tools and max tokens to the provider', async () => {
+    const fetchImpl = vi.fn(streamingFetch(sseFrames)) as unknown as typeof fetch;
+    const provider = new OpenAiProvider(fetchImpl);
+    await provider.initialize({ apiKey, baseUrl: 'https://ai.example' });
+    const tools = [{ type: 'function' as const, function: { name: 'get_weather' } }];
+    await provider.createChatCompletionStream(completionRequest({ requestId: 'stream-0002', tools, toolChoice: 'auto' }));
+    const body = JSON.parse((fetchImpl.mock.calls.at(-1)?.[1] as RequestInit).body as string);
+    expect(body).toMatchObject({
+      model: 'mock-small', max_tokens: 128, stream: true,
+      stream_options: { include_usage: true }, tools, tool_choice: 'auto',
+    });
+  });
+
+  it('aborts the provider request on abort and surfaces it as a timeout-style error', async () => {
+    const provider = await streamWith(sseFrames, { apiKey, baseUrl: 'https://ai.example' }, { delayMs: 100 });
+    const stream = await provider.createChatCompletionStream(completionRequest({ requestId: 'stream-0003' }));
+    const iterator = stream.events()[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.value).toEqual({ type: 'chunk', content: 'Hel' });
+    stream.abort('client disconnect');
+    await expect(iterator.next()).rejects.toMatchObject({ kind: 'timeout' });
+  });
+
+  it('aborts a stalled stream after the configured idle timeout', async () => {
+    const provider = await streamWith(
+      sseFrames,
+      { apiKey, baseUrl: 'https://ai.example', timeoutMs: 1_000 },
+      { stallAfter: 2 },
+    );
+    const started = Date.now();
+    const stream = await provider.createChatCompletionStream(completionRequest({ requestId: 'stream-0004' }));
+    const events: unknown[] = [];
+    await expect(async () => {
+      for await (const event of stream.events()) events.push(event);
+    }).rejects.toMatchObject({ kind: 'timeout' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(events).toEqual([
+      { type: 'chunk', content: 'Hel' },
+      { type: 'chunk', content: 'lo' },
+    ]);
+  });
+
+  it('rejects an invalid SSE frame and a pre-stream HTTP failure', async () => {
+    const invalid = await streamWith(['data: not-json\n\n']);
+    const invalidStream = await invalid.createChatCompletionStream(completionRequest({ requestId: 'stream-0005' }));
+    await expect(async () => {
+      for await (const _event of invalidStream.events()) { /* drain */ }
+    }).rejects.toMatchObject({ kind: 'invalid_response' });
+
+    const failing = new OpenAiProvider((async () => jsonResponse({ error: {} }, 500)) as unknown as typeof fetch);
+    await failing.initialize({ apiKey, baseUrl: 'https://ai.example' });
+    await expect(failing.createChatCompletionStream(completionRequest({ requestId: 'stream-0006' })))
+      .rejects.toMatchObject({ kind: 'unavailable', statusCode: 503 });
+  });
+});
+
 describe('AI provider error normalization', () => {
   it('maps abort, HTTP, and unknown failures to retryable or terminal kinds', () => {
     const abort = new Error('aborted');

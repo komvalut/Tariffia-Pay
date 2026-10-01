@@ -169,11 +169,35 @@ export const updateAiProviderSchema = z.object({
   message: 'At least one provider field must be provided',
 });
 
-const aiChatRole = z.enum(['system', 'user', 'assistant']);
+const aiChatRole = z.enum(['system', 'user', 'assistant', 'tool']);
+const aiToolCallSchema = z.object({
+  id: z.string().trim().regex(/^[A-Za-z0-9_.:-]{1,128}$/),
+  type: z.literal('function'),
+  function: z.object({
+    name: z.string().trim().min(1).max(120),
+    arguments: z.string().max(16_000),
+  }).strict(),
+}).strict();
+const aiToolCallList = z.array(aiToolCallSchema).max(16);
 const aiChatMessage = z.object({
   role: aiChatRole,
-  content: z.string().min(1).max(16_000),
+  content: z.string().max(16_000),
+  toolCallId: z.string().trim().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+  toolCalls: aiToolCallList.optional(),
+}).strict().refine((value) => value.content.trim().length > 0 || (value.toolCalls?.length ?? 0) > 0, {
+  message: 'Message content is required unless the message carries tool calls',
+});
+const aiToolDefinition = z.object({
+  type: z.literal('function'),
+  function: z.object({
+    name: z.string().trim().regex(/^[A-Za-z0-9_.:-]{1,120}$/),
+    description: z.string().trim().max(512).optional(),
+    parameters: z.record(z.unknown()).optional(),
+  }).strict(),
 }).strict();
+const aiToolList = z.array(aiToolDefinition).max(64);
+const aiToolChoice = z.enum(['auto', 'none', 'required']);
 
 export const aiChatCompletionSchema = z.object({
   requestId: z.string().trim().min(8).max(128),
@@ -183,8 +207,12 @@ export const aiChatCompletionSchema = z.object({
   messages: z.array(aiChatMessage).min(1).max(64),
   maxOutputTokens: z.number().int().min(1).max(4096).optional(),
   temperature: z.number().min(0).max(2).optional(),
+  tools: aiToolList.optional(),
+  toolChoice: aiToolChoice.optional(),
   metadata: z.record(z.unknown()).default({}),
 }).strict();
+
+export const aiChatStreamSchema = aiChatCompletionSchema;
 
 export const createAiModelSchema = z.object({
   slug: aiSlug,

@@ -2,10 +2,10 @@ import type { FastifyPluginAsync } from 'fastify';
 import { config } from '../config.js';
 import type { Database } from '../db.js';
 import { parseBody, requireMerchant } from '../http.js';
-import { aiChatCompletionSchema, recordAiUsageSchema } from '../schemas.js';
+import { aiChatCompletionSchema, aiChatStreamSchema, recordAiUsageSchema } from '../schemas.js';
 import { customerAiPricesPerUnit, type AiPricingModel } from '../services/ai-pricing-engine.js';
 import type { AiPricingEngine } from '../services/ai-pricing-engine.js';
-import type { AiGatewayService } from '../services/ai-gateway-service.js';
+import type { AiGatewayService, AiGatewayStreamEvent } from '../services/ai-gateway-service.js';
 import type { AiProviderRegistry } from '../ai-providers/registry.js';
 
 function pageLimit(value: string | undefined): number {
@@ -66,10 +66,58 @@ export const aiRoutes: FastifyPluginAsync<{
       messages: body.messages,
       maxOutputTokens: Math.min(body.maxOutputTokens ?? config.AI_MAX_OUTPUT_TOKENS, config.AI_MAX_OUTPUT_TOKENS),
       ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+      ...(body.tools === undefined ? {} : { tools: body.tools }),
+      ...(body.toolChoice === undefined ? {} : { toolChoice: body.toolChoice }),
       metadata: body.metadata,
       requestId: body.requestId,
     });
     return reply.code(result.status).send(result.body);
+  });
+
+  app.post('/v1/ai/chat/stream', async (request, reply) => {
+    const merchant = await requireMerchant(request, db);
+    const body = parseBody(aiChatStreamSchema, request.body);
+    // Validation, credit authorization and provider resolution happen before the stream
+    // starts: bounded JSON errors are returned as normal HTTP errors, never in-stream.
+    const prepared = await aiGateway.prepareChatCompletionStream({
+      merchantId: merchant.id,
+      customerId: body.customerId,
+      provider: body.provider,
+      model: body.model,
+      messages: body.messages,
+      maxOutputTokens: Math.min(body.maxOutputTokens ?? config.AI_MAX_OUTPUT_TOKENS, config.AI_MAX_OUTPUT_TOKENS),
+      ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+      ...(body.tools === undefined ? {} : { tools: body.tools }),
+      ...(body.toolChoice === undefined ? {} : { toolChoice: body.toolChoice }),
+      metadata: body.metadata,
+      requestId: body.requestId,
+    });
+
+    reply.hijack();
+    const response = reply.raw;
+    response.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    response.on('error', () => undefined);
+    let finished = false;
+    const disconnect = new AbortController();
+    response.on('close', () => {
+      if (!finished) disconnect.abort();
+    });
+    const write = (event: AiGatewayStreamEvent) => {
+      if (!finished && !response.writableEnded && !response.destroyed) {
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+    };
+    try {
+      await prepared.run({ write, signal: disconnect.signal });
+    } finally {
+      finished = true;
+      if (!response.writableEnded && !response.destroyed) response.end();
+    }
   });
 
   app.get('/v1/ai/usage', async (request, reply) => {

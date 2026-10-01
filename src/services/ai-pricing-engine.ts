@@ -163,6 +163,8 @@ export class AiPricingEngine {
   /**
    * Atomically deducts credits, writes the ledger entry and stores the usage record.
    * The caller must already hold the credit account row lock inside its own transaction.
+   * `charge` overrides the customer charge (and recomputes profit) when the caller must
+   * cap the settlement at a pre-authorized maximum; token counts remain the actual usage.
    */
   async settleUsageInTransaction(client: PoolClient, input: {
     merchantId: string;
@@ -176,8 +178,16 @@ export class AiPricingEngine {
     metadata: Record<string, unknown>;
     providerRequestId?: string | null;
     usageAuthoritative?: boolean;
+    charge?: { customerPriceUsd: string };
   }) {
-    const price = calculateAiUsagePrice(input.model, input.inputTokens, input.outputTokens);
+    const computedPrice = calculateAiUsagePrice(input.model, input.inputTokens, input.outputTokens);
+    const price = input.charge
+      ? {
+        providerCostUsd: computedPrice.providerCostUsd,
+        customerPriceUsd: input.charge.customerPriceUsd,
+        profitUsd: usdFromUnits(usdToUnits(input.charge.customerPriceUsd) - usdToUnits(computedPrice.providerCostUsd)),
+      }
+      : computedPrice;
     const creditUnits = creditUnitsForPrice(price.customerPriceUsd, input.creditsPerUsdcRate);
     if (creditUnits <= 0n) throw new HttpError(409, 'AI model pricing must produce a positive customer charge', 'zero_ai_usage_price');
 

@@ -87,16 +87,39 @@ export interface SmsRequestResult {
   };
 }
 
-export type AiChatRole = 'system' | 'user' | 'assistant';
+export type AiChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export interface AiToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
+export interface AiToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
 
 export interface AiChatCompletionRequest {
   requestId: string;
   customerId: string;
   provider: string;
   model: string;
-  messages: Array<{ role: AiChatRole; content: string }>;
+  messages: Array<{
+    role: AiChatRole;
+    content: string;
+    toolCallId?: string;
+    name?: string;
+    toolCalls?: AiToolCall[];
+  }>;
   maxOutputTokens?: number;
   temperature?: number;
+  tools?: AiToolDefinition[];
+  toolChoice?: 'auto' | 'none' | 'required';
   metadata?: Record<string, unknown>;
 }
 
@@ -111,7 +134,9 @@ export interface AiChatCompletionResult {
     providerResponseId: string;
     finishReason: string | null;
     latencyMs: number;
+    toolCallCount: number;
     message: { role: 'assistant'; content: string };
+    toolCalls?: AiToolCall[];
   };
   usage: {
     id: string;
@@ -126,6 +151,40 @@ export interface AiChatCompletionResult {
     usageSource: 'provider' | 'estimated';
   };
 }
+
+export type AiStreamClientEvent =
+  | { type: 'chunk'; content: string }
+  | { type: 'tool_call'; toolCall: AiToolCall }
+  | { type: 'finish'; finishReason: string | null }
+  | {
+    type: 'done';
+    request: {
+      id: string;
+      requestId: string;
+      customerId: string;
+      provider: string;
+      model: string;
+      providerRequestId: string;
+      providerResponseId: string;
+      finishReason: string | null;
+      latencyMs: number;
+      toolCallCount: number;
+      chargeCapped: boolean;
+    };
+    usage: {
+      id: string;
+      requestId: string;
+      pricingMode: 'PER_REQUEST' | 'PER_1K_TOKENS' | 'PER_REQUEST_AND_TOKENS';
+      inputTokens: number;
+      outputTokens: number;
+      customerPriceUsd: string;
+      creditsDeducted: string;
+      balanceAfter: string;
+      currency: 'CREDITS';
+      usageSource: 'provider' | 'estimated';
+    };
+  }
+  | { type: 'error'; error: string; message: string };
 
 export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'EXPIRED' | 'PAST_DUE';
 export type SubscriptionBillingMode = 'MANUAL' | 'AUTOMATIC';
@@ -570,6 +629,33 @@ export class TariffiaClient {
     return this.request('/v1/ai/chat/completions', 'POST', input, options);
   }
 
+  /**
+   * Streams a chat completion over server-sent events. Chunks arrive as they are
+   * generated; the terminal `done` event carries the settled usage and charge.
+   * Streaming chunks are never authoritative billing data.
+   */
+  async *streamChatCompletion(input: AiChatCompletionRequest, options: RequestOptions = {}): AsyncGenerator<AiStreamClientEvent> {
+    const response = await this.rawRequest('/v1/ai/chat/stream', 'POST', input, options);
+    if (!response.body) throw new Error('The streaming response has no body');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let separator = buffer.indexOf('\n\n');
+      while (separator >= 0) {
+        const frame = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        separator = buffer.indexOf('\n\n');
+        const line = frame.split('\n').find((entry) => entry.startsWith('data:'));
+        if (!line) continue;
+        yield JSON.parse(line.slice(5).trim()) as AiStreamClientEvent;
+      }
+    }
+  }
+
   getSmsServices(options: RequestOptions = {}): Promise<{ services: SmsService[] }> {
     return this.request('/v1/sms/services', 'GET', undefined, options);
   }
@@ -661,19 +747,7 @@ export class TariffiaClient {
     options: RequestOptions,
     idempotencyKey?: string,
   ): Promise<T> {
-    const headers: Record<string, string> = {
-      accept: 'application/json',
-      authorization: `Bearer ${this.#apiKey}`,
-    };
-    if (body !== undefined) headers['content-type'] = 'application/json';
-    if (idempotencyKey !== undefined) headers['idempotency-key'] = idempotencyKey;
-
-    const response = await this.fetcher(`${this.baseUrl}${path}`, {
-      method,
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
+    const response = await this.rawRequest(path, method, body, options, idempotencyKey);
     const text = await response.text();
     let parsed: unknown;
     if (text) {
@@ -694,6 +768,41 @@ export class TariffiaClient {
       );
     }
     return parsed as T;
+  }
+
+  private async rawRequest(
+    path: string,
+    method: string,
+    body: unknown,
+    options: RequestOptions,
+    idempotencyKey?: string,
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      authorization: `Bearer ${this.#apiKey}`,
+    };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (idempotencyKey !== undefined) headers['idempotency-key'] = idempotencyKey;
+
+    const response = await this.fetcher(`${this.baseUrl}${path}`, {
+      method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      let parsed: unknown;
+      try { parsed = text ? JSON.parse(text) as unknown : undefined; } catch { parsed = text; }
+      const errorBody = isRecord(parsed) ? parsed : {};
+      throw new TariffiaApiError(
+        typeof errorBody.message === 'string' ? errorBody.message : `Tariffia API request failed with status ${response.status}`,
+        response.status,
+        typeof errorBody.error === 'string' ? errorBody.error : 'request_error',
+        parsed,
+      );
+    }
+    return response;
   }
 
   private async requestPdf(path: string, options: RequestOptions): Promise<Uint8Array> {
