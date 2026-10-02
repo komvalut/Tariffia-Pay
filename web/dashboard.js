@@ -444,13 +444,15 @@ async function openPage(id) {
 }
 
 async function renderOverview(container) {
-  const [response, health, revenueResponse] = await Promise.all([
+  const [response, health, revenueResponse, historyResponse] = await Promise.all([
     api(role === 'admin' ? '/v1/admin/dashboard/overview' : '/v1/dashboard/overview'),
     fetch('/health', { cache: 'no-store' }).then((r) => r.ok ? r.json() : Promise.reject(new Error('Health check failed'))).catch(() => null),
     role === 'merchant' ? api('/v1/revenue/summary').catch(() => null) : Promise.resolve(null),
+    role === 'merchant' ? api('/v1/revenue/history').catch(() => null) : Promise.resolve(null),
   ]);
   const data = response.overview ?? {};
   const revenue = revenueResponse?.revenue ?? null;
+  const revenueHistory = (historyResponse?.history ?? []).slice(-14).reverse();
   const healthOk = health?.status === 'ok';
   const cards = role === 'admin'
     ? [
@@ -474,7 +476,8 @@ async function renderOverview(container) {
       stat('Failed webhooks', data.failed_webhook_deliveries ?? 0, healthOk ? 'API responding' : 'Check connection'),
     ];
   const revenuePanel = role === 'merchant' && revenue ? `<section class="panel"><div class="panel-head"><div><h2>Revenue</h2><p>Confirmed revenue and payment counts from your existing payment records. Read-only.</p></div></div>
-    <div class="stats-grid">${stat('Confirmed revenue', formatMoney(revenue.totalConfirmed ?? 0, revenue.currency && revenue.currency !== 'MIXED' ? revenue.currency : 'USD'), `${revenue.confirmedPaymentCount ?? 0} confirmed payments`)}${stat('Confirmed', revenue.confirmedPaymentCount ?? 0, 'Payments confirmed')}${stat('Pending', revenue.pendingPaymentCount ?? 0, 'Awaiting confirmation')}${stat('Failed', revenue.failedPaymentCount ?? 0, 'Failed payments')}${stat('Expired', revenue.expiredPaymentCount ?? 0, 'Expired payments')}</div></section>` : '';
+    <div class="stats-grid">${stat('Confirmed revenue', formatMoney(revenue.totalConfirmed ?? 0, revenue.currency && revenue.currency !== 'MIXED' ? revenue.currency : 'USD'), `${revenue.confirmedPaymentCount ?? 0} confirmed payments`)}${stat('Confirmed', revenue.confirmedPaymentCount ?? 0, 'Payments confirmed')}${stat('Pending', revenue.pendingPaymentCount ?? 0, 'Awaiting confirmation')}${stat('Failed', revenue.failedPaymentCount ?? 0, 'Failed payments')}${stat('Expired', revenue.expiredPaymentCount ?? 0, 'Expired payments')}</div>
+    ${revenueHistory.length ? `<div class="panel-head"><div><h2>Daily revenue history</h2><p>Confirmed revenue per UTC day (most recent first).</p></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Currency</th><th>Confirmed amount</th><th>Payments</th></tr></thead><tbody>${revenueHistory.map((entry) => `<tr><td>${esc(entry.date)}</td><td>${esc(entry.currency)}</td><td>${esc(formatMoney(entry.confirmedAmount, entry.currency))}</td><td>${esc(entry.confirmedPaymentCount)}</td></tr>`).join('')}</tbody></table></div>` : ''}</section>` : '';
   container.innerHTML = `<div class="page-head"><div><div class="eyebrow">${role === 'admin' ? 'Operations' : 'Account activity'}</div><h1>${role === 'admin' ? 'Good overview.' : 'Your account at a glance.'}</h1><p>${role === 'admin' ? 'A live read of payments, stored credits, reseller economics and delivery health.' : 'A consolidated view of your payment rail and usage.'}</p></div><span class="health-badge ${healthOk ? '' : 'down'}">${healthOk ? 'API operational' : 'API unavailable'}</span></div>
     <div class="stats-grid">${cards.join('')}</div>${revenuePanel}<div class="overview-grid"><section class="panel"><div class="panel-head"><div><h2>${role === 'admin' ? 'Platform controls' : 'Next actions'}</h2><p>Current status from the shared Tariffia services.</p></div></div><div class="signal-list">
       ${signal('Payment engine', 'Base USDC verification and Payment Core', healthOk)}
