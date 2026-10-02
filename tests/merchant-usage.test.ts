@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newDb } from 'pg-mem';
 import type { Pool } from 'pg';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Database } from '../src/db.js';
 import { buildApp } from '../src/app.js';
 import { MerchantUsageService } from '../src/services/merchant-usage-service.js';
@@ -76,6 +76,8 @@ async function alignWindow(): Promise<void> {
 }
 
 describe('per-merchant usage counters and rate limits', () => {
+  // Window alignment plus per-test setup can be slow when the whole suite runs in parallel.
+  vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
   let db: Database;
   let app: Awaited<ReturnType<typeof buildApp>>;
   let apiKey: string;

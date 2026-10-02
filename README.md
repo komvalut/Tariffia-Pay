@@ -63,6 +63,7 @@ Other merchant endpoints:
 
 - `GET /v1/orders`, `GET /v1/orders/:orderId`
 - `GET /v1/payments/:paymentId`
+- `GET /v1/transactions`, `GET /v1/transactions/:paymentId`
 - `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
 - `POST /v1/payment-links`, `GET /v1/payment-links`, `GET /v1/payment-links/:paymentId`, `PATCH /v1/payment-links/:paymentId`, `DELETE /v1/payment-links/:paymentId`
 - `GET /v1/customers`, `GET /v1/customers/:customerId`
@@ -96,6 +97,8 @@ Every merchant-owned read is scoped to the authenticated merchant. The ledger da
 Merchant order visibility is available through `GET /v1/orders` (list, newest first, optional `status` filter, bounded `limit`) and `GET /v1/orders/:orderId` (detail). Each order reports its id, reference, description, amount, currency, order status (`CREATED`, `PENDING`, `PAID`, `FAILED`, `EXPIRED`, `CANCELLED`), the linked payment status, and creation/update timestamps; results are always scoped to the authenticated merchant. The merchant dashboard "Orders" page lists orders with the existing status filter and a **Details** action that opens the full order record. Order creation remains `POST /v1/orders` through the existing Payment Core; no new order system is introduced.
 
 Merchant customer visibility is available through `GET /v1/customers` (list, newest first, bounded `limit`) and `GET /v1/customers/:customerId` (detail). Each customer reports its id, name/email/external id and metadata when stored, creation time, and basic order/payment counts derived from the existing records. Results are always scoped to the authenticated merchant. Customer creation/update remains `POST /v1/customers`; the merchant dashboard "Customers" page adds a **Details** action next to the existing list and create form. No secrets or credentials are exposed.
+
+Merchant transaction visibility is available through `GET /v1/transactions` (list, newest first, with optional `status` and `network` filters and a bounded `limit`) and `GET /v1/transactions/:paymentId` (detail). Each transaction is a merchant-facing view over an existing payment: payment id, order id, description, amount, currency, payment status, network, adapter, transaction id/hash (null until confirmed), and detected/confirmed/expires/created timestamps. Results are always scoped to the authenticated merchant and never expose private keys. The merchant dashboard "Transactions" page lists transactions with status and network filters and a **Details** action.
 
 Production startup requires explicit database, admin, API-key pepper, public URL, and webhook encryption configuration. Admin and pepper secrets must be distinct random values of at least 32 characters; `PUBLIC_BASE_URL` and `BASE_RPC_URL` must use HTTPS. Configure `TRUST_PROXY` only with the IPs/CIDRs of trusted reverse proxies; forwarded client addresses are not trusted by default. API requests are rate-limited per client address, and responses include basic content-type, framing, referrer, permissions, and CSP protections. Production webhook delivery pins the validated DNS answer to the outbound connection to prevent DNS-rebinding SSRF.
 

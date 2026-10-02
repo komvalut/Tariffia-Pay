@@ -16,6 +16,7 @@ const navItems = {
   ],
   merchant: [
     ['overview', 'Overview'], ['api-usage', 'API usage'], ['api-keys', 'API keys'], ['customers', 'Customers'], ['orders', 'Orders'], ['payments', 'Payments'],
+    ['transactions', 'Transactions'],
     ['payment-links', 'Payment links'], ['credit-accounts', 'Credit balances'], ['topups', 'Credit top-ups'],
     ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhooks', 'Webhooks'],
     ['webhook-endpoints', 'Webhook settings'], ['webhook-deliveries', 'Delivery history'],
@@ -270,6 +271,66 @@ async function renderMerchantWebhooks(container) {
   });
 }
 
+const TRANSACTION_STATUSES = ['CREATED', 'PENDING', 'DETECTED', 'VERIFYING', 'CONFIRMED', 'FAILED', 'EXPIRED', 'REFUNDED'];
+
+async function renderMerchantTransactions(container) {
+  const filters = { status: '', network: '' };
+  const load = async () => {
+    const params = new URLSearchParams({ limit: '50' });
+    if (filters.status) params.set('status', filters.status);
+    if (filters.network) params.set('network', filters.network);
+    return api(`/v1/transactions?${params.toString()}`);
+  };
+  const render = async () => {
+    const response = await load();
+    const transactions = response.transactions ?? [];
+    const rows = transactions.map((transaction) => `<tr>
+        <td>${esc(transaction.description ?? '—')}</td>
+        <td>${esc(formatMoney(transaction.amount, transaction.currency ?? 'USDC'))}</td>
+        <td><span class="pill ${statusTone(transaction.status)}">${esc(transaction.status)}</span></td>
+        <td>${esc(transaction.network ?? '—')}</td>
+        <td>${transaction.transactionHash ? `<span class="mono" title="${esc(transaction.transactionHash)}">${esc(String(transaction.transactionHash).slice(0, 13))}…${esc(String(transaction.transactionHash).slice(-8))}</span>` : '—'}</td>
+        <td>${esc(formatDate(transaction.createdAt))}</td>
+        <td>${esc(transaction.confirmedAt ? formatDate(transaction.confirmedAt) : '—')}</td>
+        <td><button class="button small" data-transaction-detail="${esc(transaction.paymentId)}">Details</button></td>
+      </tr>`).join('');
+    container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Merchant data</div><h1>Transactions</h1><p>Your payments across the configured networks. No private keys or secrets are shown.</p></div><button class="button" data-refresh-transactions>Refresh</button></div>
+      <section class="panel"><div class="toolbar">
+        <label class="field filter-field"><span>Status</span><select data-tx-status><option value="">All</option>${TRANSACTION_STATUSES.map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${status}</option>`).join('')}</select></label>
+        <label class="field filter-field"><span>Network</span><input data-tx-network placeholder="base" value="${esc(filters.network)}"></label>
+        <button class="button" data-tx-apply>Apply filters</button></div>
+        ${transactions.length ? `<div class="table-wrap"><table><thead><tr><th>Description</th><th>Amount</th><th>Status</th><th>Network</th><th>Transaction</th><th>Created</th><th>Confirmed</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state">No transactions match these filters.</div>'}</section>`;
+    container.querySelector('[data-refresh-transactions]').addEventListener('click', render);
+    container.querySelector('[data-tx-status]').addEventListener('change', (event) => { filters.status = event.target.value; render(); });
+    container.querySelector('[data-tx-network]').addEventListener('change', (event) => { filters.network = event.target.value.trim(); render(); });
+    container.querySelector('[data-tx-apply]').addEventListener('click', () => {
+      filters.status = container.querySelector('[data-tx-status]').value;
+      filters.network = container.querySelector('[data-tx-network]').value.trim();
+      render();
+    });
+    container.querySelectorAll('[data-transaction-detail]').forEach((button) => button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const result = await api(`/v1/transactions/${encodeURIComponent(button.dataset.transactionDetail)}`);
+        const transaction = result.transaction ?? {};
+        const fields = [
+          ['Transaction ID', transaction.transactionId ?? '—'], ['Payment ID', transaction.paymentId],
+          ['Order ID', transaction.orderId], ['Description', transaction.description ?? '—'],
+          ['Amount', formatMoney(transaction.amount, transaction.currency ?? 'USDC')],
+          ['Status', transaction.status], ['Network', transaction.network ?? '—'],
+          ['Adapter', transaction.adapter ?? '—'],
+          ['Detected', transaction.detectedAt ? formatDate(transaction.detectedAt) : '—'],
+          ['Confirmed', transaction.confirmedAt ? formatDate(transaction.confirmedAt) : '—'],
+          ['Expires', transaction.expiresAt ? formatDate(transaction.expiresAt) : '—'],
+          ['Created', formatDate(transaction.createdAt)],
+        ];
+        showModal('Transaction details', `<div class="table-wrap"><table><tbody>${fields.map(([label, value]) => `<tr><th>${esc(label)}</th><td>${esc(value ?? '—')}</td></tr>`).join('')}</tbody></table></div>`, 'Transaction');
+      } catch (error) { notify(error.message); } finally { button.disabled = false; }
+    }));
+  };
+  await render();
+}
+
 function setTheme(theme) {
   document.body.dataset.theme = theme;
   localStorage.setItem('tariffia-theme', theme);
@@ -330,6 +391,7 @@ function renderShell() {
 function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
     id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' : id === 'webhooks' ? 'Webhooks' :
+    id === 'transactions' ? 'Transactions' :
     (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));
   document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
@@ -349,6 +411,7 @@ async function openPage(id) {
     else if (role === 'merchant' && id === 'api-usage') await renderMerchantApiUsage(container);
     else if (role === 'merchant' && id === 'api-keys') await renderMerchantApiKeys(container);
     else if (role === 'merchant' && id === 'webhooks') await renderMerchantWebhooks(container);
+    else if (role === 'merchant' && id === 'transactions') await renderMerchantTransactions(container);
     else if (role === 'merchant' && id === 'ai-models') await renderMerchantModels(container);
     else await renderCollectionPage(container, id, title);
   } catch (error) {

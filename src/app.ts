@@ -15,6 +15,7 @@ import { merchantRoutes } from './modules/merchants.js';
 import { orderRoutes } from './modules/orders.js';
 import { paymentLinkRoutes } from './modules/payment-links.js';
 import { paymentRoutes } from './modules/payments.js';
+import { transactionRoutes } from './modules/transactions.js';
 import { webhookRoutes } from './modules/webhooks.js';
 import { creditRoutes } from './modules/credits.js';
 import { adminCreditRoutes } from './modules/admin-credits.js';
@@ -169,6 +170,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   await app.register(orderRoutes, { db, paymentCore });
   await app.register(paymentLinkRoutes, { db, paymentCore });
   await app.register(paymentRoutes, { db, verification: paymentVerification });
+  await app.register(transactionRoutes, { db });
   await app.register(checkoutRoutes, { db, verification: paymentVerification, adapters });
   await app.register(billingDocumentRoutes, { db, adapters });
   await app.register(webhookRoutes, { db });
