@@ -94,6 +94,7 @@ describe('Tariffia merchant and payment API', () => {
     await pool.query(await readFile(path.join(migrationsDir, '0009_sms_otp.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0010_sms_provider_hardening.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0011_merchant_usage_limits.sql'), 'utf8'));
+    await pool.query(await readFile(path.join(migrationsDir, '0012_payment_links.sql'), 'utf8'));
 
     db = {
       query: (text, values = []) => pool.query(text, values),

@@ -47,6 +47,16 @@ export const checkoutRoutes: FastifyPluginAsync<{
   verification: PaymentVerificationService;
   adapters: PaymentAdapterRegistry;
 }> = async (app, { db, verification, adapters }) => {
+  // A paused or deleted link is no longer presentable. Payments with no management row stay active.
+  async function linkIsInactive(paymentId: string): Promise<boolean> {
+    const result = await db.query<{ enabled: boolean; deleted_at: Date | null }>(
+      'SELECT enabled, deleted_at FROM payment_links WHERE payment_id = $1', [paymentId],
+    );
+    const row = result.rows[0];
+    if (!row) return false;
+    return row.enabled === false || row.deleted_at !== null;
+  }
+
   app.get('/p/:paymentId', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { paymentId } = request.params as { paymentId: string };
     if (!publicIdPattern.test(paymentId)) throw new HttpError(404, 'Payment link not found', 'not_found');
@@ -60,7 +70,7 @@ export const checkoutRoutes: FastifyPluginAsync<{
       'SELECT adapter, recipient_address FROM payments WHERE id = $1', [paymentId],
     );
     const payment = exists.rows[0];
-    if (!payment) throw new HttpError(404, 'Payment link not found', 'not_found');
+    if (!payment || await linkIsInactive(paymentId)) throw new HttpError(404, 'Payment link not found', 'not_found');
     const qrContent = checkoutQrContent(paymentId, payment.adapter, payment.recipient_address, adapters);
     const image = await QRCode.toBuffer(qrContent, { type: 'png', errorCorrectionLevel: 'M', margin: 2, width: 360 });
     return reply.type('image/png').header('cache-control', 'public, max-age=300').send(image);
@@ -84,7 +94,7 @@ export const checkoutRoutes: FastifyPluginAsync<{
       [paymentId],
     );
     const payment = result.rows[0];
-    if (!payment) throw new HttpError(404, 'Payment link not found', 'not_found');
+    if (!payment || await linkIsInactive(paymentId)) throw new HttpError(404, 'Payment link not found', 'not_found');
     const manifest = adapters.getManifest(payment.adapter);
     const paymentRequestFormat = manifest?.capabilities.paymentRequestFormat ?? 'wallet';
     return reply.send({

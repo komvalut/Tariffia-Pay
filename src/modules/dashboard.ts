@@ -174,8 +174,10 @@ const merchantCollections: Record<string, Collection> = {
   },
   'payment-links': {
     select: `p.id AS "paymentId", o.id AS "orderId", o.description, o.amount::text AS amount,
-      o.currency, p.status, p.expires_at AS "expiresAt", p.created_at AS "createdAt"`,
-    from: 'payments p JOIN orders o ON o.id = p.order_id', search: ['o.description', 'p.id::text'],
+      o.currency, p.status, COALESCE(pl.enabled, true) AS enabled, pl.deleted_at AS "deletedAt",
+      p.expires_at AS "expiresAt", p.created_at AS "createdAt"`,
+    from: 'payments p JOIN orders o ON o.id = p.order_id LEFT JOIN payment_links pl ON pl.payment_id = p.id',
+    filter: 'pl.deleted_at IS NULL', search: ['o.description', 'p.id::text'],
     orderBy: 'p.created_at DESC', status: 'p.status', tenant: 'p.merchant_id = $1',
   },
   'credit-accounts': {

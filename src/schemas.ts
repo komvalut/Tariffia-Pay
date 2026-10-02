@@ -305,3 +305,7 @@ export const updateMerchantUsageLimitsSchema = z.object({
   aiRequestsPerMinute: merchantUsageLimit,
   smsRequestsPerMinute: merchantUsageLimit,
 }).strict();
+
+export const updatePaymentLinkSchema = z.object({
+  enabled: z.boolean(),
+}).strict();

@@ -64,7 +64,7 @@ Other merchant endpoints:
 - `GET /v1/orders/:orderId`
 - `GET /v1/payments/:paymentId`
 - `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
-- `POST /v1/payment-links` with the same order payload and `Idempotency-Key`
+- `POST /v1/payment-links`, `GET /v1/payment-links`, `GET /v1/payment-links/:paymentId`, `PATCH /v1/payment-links/:paymentId`, `DELETE /v1/payment-links/:paymentId`
 - `GET /v1/customers/:customerId`
 - `GET /v1/ledger?limit=50`
 - `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
@@ -120,6 +120,8 @@ An unmined or under-confirmed payment remains `PENDING`/`DETECTED` and is not re
 ## Hosted Checkout, Links and QR
 
 `POST /v1/payment-links` creates an order and payment through the same Payment Core as `POST /v1/orders`; it does not create a second payment record or balance system. The idempotent response includes `checkoutUrl` and `qrUrl`. `PUBLIC_BASE_URL` must be the externally reachable HTTPS origin when merchants share links publicly.
+
+Merchants manage their links with `GET /v1/payment-links` (list, newest first, with status, amount/currency, enabled state and the checkout/QR URLs), `GET /v1/payment-links/:paymentId` (detail), `PATCH /v1/payment-links/:paymentId` (`{ "enabled": false }` pauses the link; `true` re-enables it) and `DELETE /v1/payment-links/:paymentId` (soft-deletes the link). A payment link is the existing payment/order; the management row stores only the reversible enabled/deleted state and never touches payment processing or verification. A paused or deleted link's public checkout view and QR stop resolving (404) while on-chain verification of an already-sent transfer remains available. Results are always scoped to the authenticated merchant; payment links created through `POST /v1/orders` behave identically (active by default). The merchant dashboard "Payment links" page lists links with status, amount/currency and checkout link, and offers enable/disable and delete actions.
 
 The hosted page at `/p/:paymentId` fetches a limited public view of the existing payment: merchant, description, amount, USDC token, Base network, recipient and status. It supports an injected EIP-1193 browser wallet to send the exact ERC-20 transfer directly to the merchant, and polls the server for status. The browser submits a transaction hash only as a hint; server-side verification remains authoritative. Merchant API keys and private keys are never sent to the browser.
 

@@ -42,7 +42,7 @@ const tables = {
     customers: { title: 'Customers', endpoint: 'customers', description: 'Your customer records. Customer creation uses the existing customer API.', columns: [['name', 'Name'], ['email', 'Email'], ['externalId', 'External ID'], ['createdAt', 'Created']], form: 'customer' },
     orders: { title: 'Orders', endpoint: 'orders', description: 'Orders created through the existing Payment Core.', columns: [['description', 'Order'], ['customer', 'Customer'], ['reference', 'Reference'], ['amount', 'Amount'], ['status', 'Order'], ['paymentStatus', 'Payment'], ['createdAt', 'Created']], filter: ['CREATED', 'PENDING', 'PAID', 'FAILED', 'EXPIRED', 'CANCELLED'] },
     payments: { title: 'Payments', endpoint: 'payments', description: 'Payment state and verified Base transaction hashes.', columns: [['description', 'Description'], ['amount', 'Amount'], ['network', 'Network'], ['status', 'Status'], ['transactionHash', 'Transaction'], ['failureReason', 'Reason'], ['createdAt', 'Created']], filter: ['PENDING', 'DETECTED', 'VERIFYING', 'CONFIRMED', 'FAILED', 'EXPIRED'] },
-    'payment-links': { title: 'Payment links', endpoint: 'payment-links', description: 'Hosted links backed by the same order and payment records.', columns: [['description', 'Description'], ['amount', 'Amount'], ['status', 'Payment'], ['expiresAt', 'Expires'], ['createdAt', 'Created'], ['paymentId', 'Checkout']], filter: ['PENDING', 'DETECTED', 'CONFIRMED', 'FAILED', 'EXPIRED'], form: 'payment-link' },
+    'payment-links': { title: 'Payment links', endpoint: 'payment-links', description: 'Hosted links backed by the same order and payment records. Pausing or deleting a link only affects the link, not the payment.', columns: [['description', 'Description'], ['amount', 'Amount'], ['currency', 'Currency'], ['status', 'Payment'], ['enabled', 'Link'], ['expiresAt', 'Expires'], ['createdAt', 'Created'], ['paymentId', 'Checkout']], filter: ['PENDING', 'DETECTED', 'CONFIRMED', 'FAILED', 'EXPIRED'], form: 'payment-link', actions: 'payment-link' },
     'credit-accounts': { title: 'Credit balances', endpoint: 'credit-accounts', description: 'Per-customer balances from the existing Credit Engine.', columns: [['name', 'Customer'], ['email', 'Email'], ['externalId', 'External ID'], ['balanceUnits', 'Balance'], ['updatedAt', 'Updated']], form: 'topup' },
     topups: { title: 'Credit top-ups', endpoint: 'topups', description: 'USDC-backed top-ups and their existing payment status.', columns: [['customer', 'Customer'], ['amountUsdc', 'USDC'], ['creditUnits', 'Credits'], ['status', 'Status'], ['transactionHash', 'Transaction'], ['failureReason', 'Reason'], ['createdAt', 'Created']], filter: ['PENDING', 'CREDITED', 'FAILED', 'EXPIRED'] },
     usage: { title: 'AI usage and cost', endpoint: 'usage', description: 'Your reported requests and customer charges. Provider costs and platform margins are not shown to merchants.', columns: [['customer', 'Customer'], ['provider', 'Provider'], ['model', 'Model'], ['requestId', 'Request'], ['inputTokens', 'Input'], ['outputTokens', 'Output'], ['customerPriceUsd', 'Usage cost'], ['creditsDeductedUnits', 'Credits'], ['createdAt', 'Created']] },
@@ -468,6 +468,7 @@ function actionMarkup(action, row) {
   if (action === 'provider') return `<button class="button small" data-toggle-config="provider" data-id="${esc(row.id)}">${row.enabled ? 'Disable' : 'Enable'}</button>`;
   if (action === 'model') return `<button class="button small" data-edit-model="${esc(row.id)}">Edit pricing</button> <button class="button small" data-toggle-config="model" data-id="${esc(row.id)}">${row.enabled ? 'Disable' : 'Enable'}</button>`;
   if (action === 'merchant-webhook') return `<button class="button small" data-toggle-webhook="${esc(row.id)}" data-enabled="${row.enabled}">${row.enabled ? 'Pause' : 'Resume'}</button> <button class="button small danger" data-delete-webhook="${esc(row.id)}">Delete</button>`;
+  if (action === 'payment-link') return `<button class="button small" data-toggle-payment-link="${esc(row.paymentId)}" data-enabled="${row.enabled}">${row.enabled ? 'Disable' : 'Enable'}</button> <button class="button small danger" data-delete-payment-link="${esc(row.paymentId)}">Delete</button>`;
   if (action === 'admin-attempts' || action === 'merchant-attempts') return `<button class="button small" data-attempts="${esc(row.id)}" data-endpoint="${esc(row.endpointId ?? '')}">Attempts</button>`;
   return '';
 }
@@ -610,6 +611,25 @@ function attachRowActions(container, page, config, rows) {
     } catch (error) { notify(error.message); }
   }));
   container.querySelectorAll('[data-attempts]').forEach((button) => button.addEventListener('click', () => showAttempts(button.dataset.attempts, button.dataset.endpoint)));
+  container.querySelectorAll('[data-toggle-payment-link]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await api(`/v1/payment-links/${encodeURIComponent(button.dataset.togglePaymentLink)}`, {
+        method: 'PATCH', body: JSON.stringify({ enabled: button.dataset.enabled !== 'true' }),
+      });
+      notify('Payment link updated.');
+      loadCollectionRows(container, page, config);
+    } catch (error) { notify(error.message); button.disabled = false; }
+  }));
+  container.querySelectorAll('[data-delete-payment-link]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this payment link? Its checkout page will stop working.')) return;
+    button.disabled = true;
+    try {
+      await api(`/v1/payment-links/${encodeURIComponent(button.dataset.deletePaymentLink)}`, { method: 'DELETE' });
+      notify('Payment link deleted.');
+      loadCollectionRows(container, page, config);
+    } catch (error) { notify(error.message); button.disabled = false; }
+  }));
 }
 
 async function showAttempts(deliveryId, endpointId) {
