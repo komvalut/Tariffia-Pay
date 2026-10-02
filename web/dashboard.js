@@ -17,8 +17,8 @@ const navItems = {
   merchant: [
     ['overview', 'Overview'], ['api-usage', 'API usage'], ['api-keys', 'API keys'], ['customers', 'Customers'], ['orders', 'Orders'], ['payments', 'Payments'],
     ['payment-links', 'Payment links'], ['credit-accounts', 'Credit balances'], ['topups', 'Credit top-ups'],
-    ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhook-endpoints', 'Webhook endpoints'],
-    ['webhook-deliveries', 'Delivery history'],
+    ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhooks', 'Webhooks'],
+    ['webhook-endpoints', 'Webhook settings'], ['webhook-deliveries', 'Delivery history'],
   ],
 };
 
@@ -161,8 +161,7 @@ async function renderMerchantApiKeys(container) {
       await openPage('api-keys');
     } catch (error) { notify(error.message); button.disabled = false; }
   }));
-  container.querySelector('form[data-form="api-key"]')?.addEventListener('submit', async (event) => {
-    event.preventDefault();
+  container.querySelector('form[data-form="api-key"]')?.addEventListener('submit', async (event) => {    event.preventDefault();
     const form = event.currentTarget;
     const button = form.querySelector('button');
     const notice = form.querySelector('[data-notice]');
@@ -174,6 +173,97 @@ async function renderMerchantApiKeys(container) {
       showModal('API key created', `<p>Store this secret now. It is shown only once and only its hash is stored.</p><pre class="mono" data-revealed-secret>${esc(created.secret)}</pre><p class="notice">${esc(created.warning ?? '')}</p>`, 'API key');
       notify('API key created. Copy the secret now.');
       await openPage('api-keys');
+    } catch (error) {
+      notice.className = 'notice error'; notice.textContent = error.message; button.disabled = false;
+    }
+  });
+}
+
+const WEBHOOK_EVENT_TYPES = [
+  'payment.created', 'payment.detected', 'payment.confirmed', 'payment.failed', 'payment.expired', 'order.paid',
+  'credit.topup', 'credit.deducted', 'ai.usage.recorded', 'invoice.issued', 'receipt.issued',
+  'subscription.created', 'subscription.activated', 'subscription.paused', 'subscription.resumed',
+  'subscription.cancelled', 'subscription.past_due', 'subscription.expired',
+  'subscription.billing_cycle.created', 'subscription.billing_cycle.paid', 'subscription.billing_cycle.failed',
+  'ai.request.completed', 'ai.request.failed', 'sms.request.completed', 'sms.request.failed',
+];
+
+async function renderMerchantWebhooks(container) {
+  const [endpointsResponse, deliveriesResponse] = await Promise.all([
+    api('/v1/webhooks'),
+    api('/v1/dashboard/webhook-deliveries?limit=25').catch(() => ({ items: [] })),
+  ]);
+  const endpoints = endpointsResponse.endpoints ?? [];
+  const deliveries = deliveriesResponse.items ?? [];
+  const eventBoxes = WEBHOOK_EVENT_TYPES.map((event) =>
+    `<label class="check-chip"><input type="checkbox" name="events" value="${esc(event)}"><span>${esc(event)}</span></label>`).join('');
+  const endpointRows = endpoints.map((endpoint) => `<tr>
+      <td>${esc(endpoint.name)}</td>
+      <td><span class="mono" title="${esc(endpoint.url)}">${esc(endpoint.url)}</span></td>
+      <td>${esc((endpoint.events ?? []).join(', '))}</td>
+      <td><span class="pill ${endpoint.enabled ? 'good' : 'bad'}">${endpoint.enabled ? 'Enabled' : 'Paused'}</span></td>
+      <td>${esc(formatDate(endpoint.createdAt))}</td>
+      <td><button class="button small" data-wh-toggle="${esc(endpoint.id)}" data-enabled="${endpoint.enabled}">${endpoint.enabled ? 'Pause' : 'Resume'}</button>
+        <button class="button small danger" data-wh-delete="${esc(endpoint.id)}">Delete</button></td>
+    </tr>`).join('');
+  const deliveryRows = deliveries.map((delivery) => `<tr>
+      <td>${esc(delivery.endpoint ?? '—')}</td>
+      <td><span class="pill ${statusTone(delivery.status)}">${esc(delivery.status)}</span></td>
+      <td>${esc(delivery.event ?? '—')}</td>
+      <td>${esc(delivery.attempts ?? 0)}</td>
+      <td>${esc(delivery.lastHttpStatus ?? '—')}</td>
+      <td>${esc(delivery.lastError ?? '—')}</td>
+      <td>${esc(formatDate(delivery.createdAt))}</td>
+    </tr>`).join('');
+  container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Merchant data</div><h1>Webhooks</h1><p>Your signed event endpoints and recent deliveries. Signing secrets are never shown again.</p></div><button class="button" data-refresh-webhooks>Refresh</button></div>
+    <section class="panel form-panel"><div class="panel-head"><div><h2>Add a webhook endpoint</h2><p>Choose the events to receive. The signing secret is stored encrypted and never returned.</p></div></div>
+      <form data-form="webhook" class="form-grid"><label class="field"><span>Name</span><input name="name" maxlength="100" required></label>
+        <label class="field span-2"><span>HTTPS endpoint</span><input name="url" type="url" placeholder="https://merchant.example/hooks" required></label>
+        <label class="field span-2"><span>Signing secret</span><input name="secret" type="password" minlength="32" maxlength="256" autocomplete="new-password" required></label>
+        <div class="field span-2"><span>Events</span><div class="check-grid">${eventBoxes}</div></div>
+        <div class="form-actions"><button class="button primary">Save endpoint</button><span class="notice" data-notice></span></div></form></section>
+    <section class="panel"><div class="panel-head"><div><h2>Endpoints</h2><p>Pausing cancels queued deliveries for the endpoint.</p></div></div>
+      ${endpoints.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>URL</th><th>Events</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>${endpointRows}</tbody></table></div>` : '<div class="empty-state">No webhook endpoints yet.</div>'}</section>
+    <section class="panel"><div class="panel-head"><div><h2>Recent deliveries</h2><p>Latest delivery attempts across your endpoints.</p></div></div>
+      ${deliveries.length ? `<div class="table-wrap"><table><thead><tr><th>Endpoint</th><th>Status</th><th>Event</th><th>Attempts</th><th>HTTP</th><th>Last error</th><th>Created</th></tr></thead><tbody>${deliveryRows}</tbody></table></div>` : '<div class="empty-state">No deliveries recorded yet.</div>'}</section>`;
+
+  container.querySelector('[data-refresh-webhooks]').addEventListener('click', () => openPage('webhooks'));
+  container.querySelectorAll('[data-wh-toggle]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await api(`/v1/webhooks/${encodeURIComponent(button.dataset.whToggle)}`, {
+        method: 'PATCH', body: JSON.stringify({ enabled: button.dataset.enabled !== 'true' }),
+      });
+      notify('Webhook endpoint updated.');
+      await openPage('webhooks');
+    } catch (error) { notify(error.message); button.disabled = false; }
+  }));
+  container.querySelectorAll('[data-wh-delete]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this webhook endpoint? Queued deliveries will be cancelled.')) return;
+    button.disabled = true;
+    try {
+      await api(`/v1/webhooks/${encodeURIComponent(button.dataset.whDelete)}`, { method: 'DELETE' });
+      notify('Webhook endpoint deleted.');
+      await openPage('webhooks');
+    } catch (error) { notify(error.message); button.disabled = false; }
+  }));
+  container.querySelector('form[data-form="webhook"]')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    const notice = form.querySelector('[data-notice]');
+    const data = new FormData(form);
+    const events = data.getAll('events');
+    button.disabled = true; notice.className = 'notice'; notice.textContent = 'Saving…';
+    try {
+      if (!events.length) throw new Error('Select at least one event.');
+      await api('/v1/webhooks', {
+        method: 'POST',
+        body: JSON.stringify({ name: data.get('name'), url: data.get('url'), secret: data.get('secret'), events }),
+      });
+      notice.className = 'notice success'; notice.textContent = 'Endpoint saved.';
+      notify('Webhook endpoint created.');
+      await openPage('webhooks');
     } catch (error) {
       notice.className = 'notice error'; notice.textContent = error.message; button.disabled = false;
     }
@@ -239,7 +329,7 @@ function renderShell() {
 
 function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
-    id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' :
+    id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' : id === 'webhooks' ? 'Webhooks' :
     (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));
   document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
@@ -258,6 +348,7 @@ async function openPage(id) {
     else if (id === 'health') await renderHealth(container);
     else if (role === 'merchant' && id === 'api-usage') await renderMerchantApiUsage(container);
     else if (role === 'merchant' && id === 'api-keys') await renderMerchantApiKeys(container);
+    else if (role === 'merchant' && id === 'webhooks') await renderMerchantWebhooks(container);
     else if (role === 'merchant' && id === 'ai-models') await renderMerchantModels(container);
     else await renderCollectionPage(container, id, title);
   } catch (error) {

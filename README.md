@@ -147,7 +147,7 @@ Each JSON event has a unique UUID `id`, `type`, `createdAt` and `data`. Deliveri
 
 Non-2xx responses, timeouts and connection failures are retried with exponential backoff and jitter up to `WEBHOOK_MAX_ATTEMPTS`. Every attempt and the latest delivery status/error are visible to the merchant; the admin API can inspect delivery status across merchants. Production endpoints must use HTTPS and resolve to public IPs. Redirects are not followed.
 
-Endpoint management and logs are available at `GET/POST /v1/webhooks`, `PATCH/DELETE /v1/webhooks/:endpointId`, `GET /v1/webhooks/:endpointId/deliveries`, and `GET /v1/webhooks/:endpointId/deliveries/:deliveryId/attempts`. Admins use `GET /v1/admin/webhook-deliveries` and `GET /v1/admin/webhook-deliveries/:deliveryId/attempts` with the server-side admin key.
+Endpoint management and logs are available at `GET/POST /v1/webhooks`, `PATCH/DELETE /v1/webhooks/:endpointId`, `GET /v1/webhooks/:endpointId/deliveries`, and `GET /v1/webhooks/:endpointId/deliveries/:deliveryId/attempts`. Admins use `GET /v1/admin/webhook-deliveries` and `GET /v1/admin/webhook-deliveries/:deliveryId/attempts` with the server-side admin key. Merchants manage endpoints self-service with the same API — create, select events, update the URL/events/name, enable/disable (pausing cancels queued deliveries) and delete — and always see only their own endpoints and delivery history; the signing secret is shown only in the create/update request and never returned or stored in plaintext. The merchant dashboard has a combined **Webhooks** page with the endpoint list (status and events) and recent deliveries. Admin webhook log views omit URL paths and query strings.
 
 ## Security and custody
 

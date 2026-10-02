@@ -89,6 +89,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .usage-track { height: 7px; margin: 10px 0 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .usage-fill { display: block; height: 100%; border-radius: 999px; background: #2f6f4f; transition: width .25s ease; }
 .usage-fill.full { background: #b45309; }
+.check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; max-height: 190px; overflow: auto; }
+.check-chip { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.check-chip input { width: auto; }
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(250px, .65fr); gap: 15px; }
 .panel { min-width: 0; padding: 20px; }
 .panel-head { margin-bottom: 18px; display: flex; align-items: center; justify-content: space-between; gap: 15px; }
