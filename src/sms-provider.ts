@@ -89,11 +89,17 @@ export interface SmsProvider {
   readonly manifest: SmsProviderManifest;
   initialize(settings: Readonly<Record<string, unknown>>): Promise<void>;
   shutdown(): Promise<void>;
-  /** True when a usable server-side credential and endpoint are configured. Never exposes the credential. */
+  /** True when a usable server-side credential is configured. Never exposes the credential. */
   isConfigured(): boolean;
   health(): Promise<SmsProviderHealth>;
   sendSms(request: SmsDeliveryRequest): Promise<SmsDeliveryResult>;
   sendOtp?(request: SmsOtpRequest): Promise<SmsDeliveryResult>;
+  /**
+   * Optional non-secret configuration status for administrators (for example which optional
+   * server-side integrations are configured). Implementations must never return secrets,
+   * credentials, message content or OTP codes.
+   */
+  configurationStatus?(): Record<string, unknown>;
 }
 
 export class SmsProviderError extends Error {

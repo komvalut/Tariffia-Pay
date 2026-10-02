@@ -101,6 +101,7 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
             registryStatus: runtime?.status ?? 'disabled',
             configured: runtime?.configured ?? false,
             capabilities: runtime?.capabilities ?? null,
+            configuration: runtime?.configuration ?? null,
             requestCount: stat?.request_count ?? 0,
             completedCount: stat?.completed_count ?? 0,
             failedCount: stat?.failed_count ?? 0,

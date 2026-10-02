@@ -56,11 +56,54 @@ OTP codes are generated server-side (or by the provider when it supports native 
 
 ## The bundled generic HTTP provider
 
-`src/sms-providers/http-sms-provider.ts` implements the documented generic contract: bearer-authenticated `POST {SMS_HTTP_BASE_URL}{SMS_HTTP_SEND_PATH}` with `{to, message, idempotency_key}`, expecting `{id, status?, segments?, cost?}`; `GET {SMS_HTTP_HEALTH_PATH}` for health; `Retry-After` parsing on 429. Configure it only through environment secrets (`SMS_HTTP_*`, `SMS_PROVIDER_ENABLED=false` disables it). A real commercial provider adapter (TextBee, Twilio, Vonage or another) is a later phase and should be added as a new implementation behind this same contract, declaring its real capabilities — including `idempotentRetries` only if the upstream API truly deduplicates retries.
+`src/sms-providers/http-sms-provider.ts` implements the documented generic contract: bearer-authenticated `POST {SMS_HTTP_BASE_URL}{SMS_HTTP_SEND_PATH}` with `{to, message, idempotency_key}`, expecting `{id, status?, segments?, cost?}`; `GET {SMS_HTTP_HEALTH_PATH}` for health; `Retry-After` parsing on 429. Configure it only through environment secrets (`SMS_HTTP_*`, `SMS_PROVIDER_ENABLED=false` disables it). A real commercial provider adapter (TextBee, Twilio, Vonage or another) should be added as a new implementation behind this same contract, declaring its real capabilities — including `idempotentRetries` only if the upstream API truly deduplicates retries.
+
+## TextBee
+
+`src/sms-providers/textbee-sms-provider.ts` implements the first real provider adapter against the official TextBee API ([API reference](https://textbee.dev/docs/api-reference), [OpenAPI specification](https://textbee.dev/openapi.json)). TextBee turns an Android phone you own into an SMS gateway; the API key comes from the TextBee dashboard and messages are delivered by the paired Android device. Only documented API behavior is implemented.
+
+### Configuration (environment only)
+
+- `TEXTBEE_ENABLED` — default `false`; the adapter is registered only when explicitly enabled.
+- `TEXTBEE_BASE_URL` — default `https://api.textbee.dev/api/v1`.
+- `TEXTBEE_API_KEY` — the TextBee dashboard API key; sent only as the documented `x-api-key` header. Never stored in the database, admin UI, dashboard, SDK responses, logs or webhooks; production rejects an enabled adapter without a real key.
+- `TEXTBEE_TIMEOUT_MS` — request timeout, default 30000.
+- `TEXTBEE_DEVICE_ID` — optional; sent as the documented `deviceId` to pin sends to one Android device. Without it TextBee selects the default device or the enabled device with the most recent heartbeat (documented behavior).
+- `TEXTBEE_SIM_SUBSCRIPTION_ID` — optional; sent as the documented numeric `simSubscriptionId` to choose the SIM.
+
+Admins register a matching `textbee` provider row (`POST /v1/admin/sms/providers`) and reference it from services as primary and/or fallback. The admin provider view shows enabled/configured status, health, capabilities, timeout, request statistics and the non-secret device/SIM configuration status (`deviceIdConfigured`, `simSubscriptionConfigured`).
+
+### Capabilities (documented, not assumed)
+
+- `sendSms: true` — mapped from Tariffia's destination and rendered message to the documented `POST /gateway/send-sms` body `{recipients: [to], message}` plus the optional configured `deviceId`/`simSubscriptionId`. Nothing else is sent; the documented API has no idempotency-key field.
+- `sendOtp: false` — TextBee documents a plain send endpoint only, so Tariffia renders OTP messages server-side and delivers them as ordinary SMS through the same flow.
+- `reportsSegments: false` — the send response documents no segment count (long messages are split by the carrier), so Tariffia's own GSM-7/UCS-2 segment estimate settles the charge and usage is marked `estimated`.
+- `reportsProviderCost: false` — the API reports no per-message provider cost, so the service's configured provider cost is recorded and no cost is invented.
+- `idempotentRetries: false` — the documented send request accepts no idempotency key and the API documents no request deduplication. A timeout is therefore an ambiguous outcome: Tariffia never automatically retries or falls back from it, and the same SMS is never sent twice because of an uncertain TextBee response. Phase 19 fallback still applies after provably safe failures (`rate_limited` with the parsed `Retry-After` hint, `unavailable`, or definitive non-acceptance).
+
+### Response normalization
+
+The documented queued send outcome `{ data: { success, message, smsBatchId, recipientCount } }` is normalized with `smsBatchId` as the provider message identifier (stored as `provider_message_id` for auditing; it can be used against TextBee's documented batch endpoints out of band). The documented immediate-dispatch shape (`successCount`/`failureCount`, no batch identifier) is accepted without inventing an identifier. `success: false` or a definitive `successCount: 0, failureCount: 1` maps to a safe rejection; any other shape is an ambiguous `invalid_response` and is never retried.
+
+### Error mapping (documented statuses)
+
+- 401 → `unauthorized` (missing/invalid/revoked API key)
+- 400 → `invalid_request` (no enabled device, device disabled, email not verified, or the message could not be pushed — never retried, so no duplicate risk; configure a fallback provider if this recurs)
+- 429 → `rate_limited` with the parsed `Retry-After` hint preserved in the attempt trail (documented rate limit: 60 sends/min, plus daily/monthly plan limits)
+- 404 → `not_found`
+- 5xx → `unavailable`
+- Timeout → `timeout` (ambiguous, never retried for TextBee)
+- Malformed/undocumented response → `invalid_response` (ambiguous, never retried)
+
+Raw TextBee error bodies, the API key and message content are never exposed to merchants or persisted.
+
+### Health check
+
+Health uses the documented read-only `GET /gateway/devices` endpoint — it never sends an SMS. It verifies the credential (401 detection), reachability, and device usability: with `TEXTBEE_DEVICE_ID` configured, the device must exist and be enabled on the account; without it, at least one enabled device must exist. Heartbeat recency is deliberately not judged (TextBee documents it only as a "likely offline" hint); a reachable-but-unhealthy account is reported to administrators through the existing provider health status and request statistics.
 
 ## Adding a provider
 
-1. Implement `SmsProvider` under `src/sms-providers/`, validating configuration in `initialize()`. Keep credentials in server environment/secret storage; never in manifests, database rows or responses.
+1. Implement `SmsProvider` under `src/sms-providers/`, validating configuration in `initialize()`. Keep credentials in server environment/secret storage; never in manifests, database rows or responses. See `src/sms-providers/textbee-sms-provider.ts` for a complete real-adapter example.
 2. Declare exactly the capabilities you implement. Declare `idempotentRetries` only for a provable upstream deduplication guarantee, and `sendOtp` only for native OTP delivery.
 3. Normalize every failure into `SmsProviderError` kinds with canonical messages; never surface raw provider text, message content or credentials.
 4. Register it in the process registry (`src/sms-providers/default-registry.ts` or a deployment-specific setup) with an explicit enabled flag and a settings object.

@@ -47,6 +47,12 @@ const schema = z.object({
   SMS_HTTP_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(30_000),
   SMS_HTTP_SEND_PATH: z.string().default('/v1/messages'),
   SMS_HTTP_HEALTH_PATH: z.string().default('/health'),
+  TEXTBEE_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  TEXTBEE_BASE_URL: z.string().url().default('https://api.textbee.dev/api/v1'),
+  TEXTBEE_API_KEY: z.string().default(''),
+  TEXTBEE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(30_000),
+  TEXTBEE_DEVICE_ID: z.string().default(''),
+  TEXTBEE_SIM_SUBSCRIPTION_ID: z.coerce.number().int().min(0).default(0),
   CREDITS_PER_USDC_RATE: z.coerce.number().int().min(1).max(1_000_000).default(100),
   CREDIT_MINIMUM_TOPUP_USDC: z.string().regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/).default('1.000000'),
   CREDIT_MAXIMUM_TOPUP_USDC: z.string().regex(/^(0|[1-9]\d{0,29})(\.\d{1,6})?$/).default('1000.000000'),
@@ -134,6 +140,19 @@ export function validateProductionConfiguration(
     }
     if (!values.SMS_HTTP_SEND_PATH.startsWith('/') || !values.SMS_HTTP_HEALTH_PATH.startsWith('/')) {
       throw new Error('SMS provider paths must be relative paths');
+    }
+  }
+  if (values.TEXTBEE_ENABLED) {
+    const textbeeBaseUrl = new URL(values.TEXTBEE_BASE_URL);
+    if (textbeeBaseUrl.protocol !== 'https:') throw new Error('TEXTBEE_BASE_URL must use HTTPS in production');
+    if (textbeeBaseUrl.username || textbeeBaseUrl.password || textbeeBaseUrl.search || textbeeBaseUrl.hash) {
+      throw new Error('TEXTBEE_BASE_URL must not contain credentials, query data, or a fragment');
+    }
+    if (!values.TEXTBEE_API_KEY.trim() || !environment.TEXTBEE_API_KEY?.trim()) {
+      throw new Error('An enabled TextBee provider requires TEXTBEE_API_KEY to be configured explicitly');
+    }
+    if (values.TEXTBEE_API_KEY.length < 20 || /^(replace-with-|change-me|test-)/i.test(values.TEXTBEE_API_KEY)) {
+      throw new Error('TEXTBEE_API_KEY must be a real provider credential in production');
     }
   }
   if (values.LIGHTNING_ADAPTER_ENABLED && values.LIGHTNING_PROVIDER_TYPE === 'none') {

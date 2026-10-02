@@ -3,6 +3,7 @@ import { config, validateProductionConfiguration } from '../src/config.js';
 
 const aiApiKey = 'sk-live-0123456789abcdefghijklmnopqrstuvwxyz';
 const smsApiKey = 'sms-live-0123456789abcdefghijklmnopqrstuvwxyz';
+const textbeeApiKey = 'textbee-live-0123456789abcdefghijklmnop';
 const smsBaseUrl = 'https://sms-gateway.example';
 
 const productionValues = {
@@ -16,6 +17,7 @@ const productionValues = {
   OPENAI_API_KEY: aiApiKey,
   SMS_HTTP_API_KEY: smsApiKey,
   SMS_HTTP_BASE_URL: smsBaseUrl,
+  TEXTBEE_API_KEY: textbeeApiKey,
 };
 
 const productionEnvironment = {
@@ -27,6 +29,7 @@ const productionEnvironment = {
   OPENAI_API_KEY: aiApiKey,
   SMS_HTTP_API_KEY: smsApiKey,
   SMS_HTTP_BASE_URL: smsBaseUrl,
+  TEXTBEE_API_KEY: textbeeApiKey,
 };
 
 describe('production security configuration', () => {
@@ -109,6 +112,30 @@ describe('production security configuration', () => {
       { ...productionValues, SMS_PROVIDER_ENABLED: false, SMS_HTTP_API_KEY: '', SMS_HTTP_BASE_URL: '' },
       { ...productionEnvironment, SMS_HTTP_API_KEY: '', SMS_HTTP_BASE_URL: '' },
     )).not.toThrow();
+  });
+
+  it('requires an explicit TextBee credential and a safe origin when TextBee is enabled', () => {
+    const enabled = { ...productionValues, TEXTBEE_ENABLED: true } as typeof productionValues;
+    const enabledEnvironment = { ...productionEnvironment, TEXTBEE_ENABLED: 'true' };
+    expect(() => validateProductionConfiguration(
+      { ...enabled, TEXTBEE_API_KEY: '' },
+      { ...enabledEnvironment, TEXTBEE_API_KEY: '' },
+    )).toThrow(/TEXTBEE_API_KEY to be configured explicitly/);
+    expect(() => validateProductionConfiguration(
+      { ...enabled, TEXTBEE_BASE_URL: 'http://api.textbee.dev/api/v1' },
+      { ...enabledEnvironment, TEXTBEE_BASE_URL: 'http://api.textbee.dev/api/v1' },
+    )).toThrow(/TEXTBEE_BASE_URL.*HTTPS/);
+    expect(() => validateProductionConfiguration(
+      { ...enabled, TEXTBEE_BASE_URL: 'https://user:secret@api.textbee.dev/api/v1' },
+      { ...enabledEnvironment, TEXTBEE_BASE_URL: 'https://user:secret@api.textbee.dev/api/v1' },
+    )).toThrow(/must not contain credentials/);
+    expect(() => validateProductionConfiguration(
+      { ...enabled, TEXTBEE_API_KEY: 'replace-with-textbee-key' },
+      { ...enabledEnvironment, TEXTBEE_API_KEY: 'replace-with-textbee-key' },
+    )).toThrow(/real provider credential/);
+    expect(() => validateProductionConfiguration(enabled, enabledEnvironment)).not.toThrow();
+    // Disabled by default: no TextBee configuration is required.
+    expect(() => validateProductionConfiguration(productionValues, productionEnvironment)).not.toThrow();
   });
 
   it('rejects reusing a database password as an application secret', () => {

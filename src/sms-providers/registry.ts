@@ -23,6 +23,8 @@ export type SmsProviderSummary = {
   configured: boolean;
   capabilities: SmsProviderManifest['capabilities'];
   health: SmsProviderHealth;
+  /** Optional non-secret configuration status; never credentials or content. */
+  configuration: Record<string, unknown> | null;
 };
 
 export class SmsProviderRegistry {
@@ -109,6 +111,15 @@ export class SmsProviderRegistry {
       } catch {
         health = { status: 'unavailable', message: 'Provider health check failed' };
       }
+      let configuration: Record<string, unknown> | null = null;
+      if (typeof entry.provider.configurationStatus === 'function') {
+        try {
+          const status = entry.provider.configurationStatus();
+          configuration = status && typeof status === 'object' && !Array.isArray(status) ? status : null;
+        } catch {
+          configuration = null;
+        }
+      }
       const { manifest } = entry.provider;
       return {
         id: manifest.id,
@@ -121,6 +132,7 @@ export class SmsProviderRegistry {
         configured: entry.provider.isConfigured(),
         capabilities: manifest.capabilities,
         health,
+        configuration,
       };
     }));
   }
