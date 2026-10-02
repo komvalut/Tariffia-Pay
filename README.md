@@ -61,7 +61,7 @@ curl -X POST http://localhost:8080/v1/orders \
 
 Other merchant endpoints:
 
-- `GET /v1/orders/:orderId`
+- `GET /v1/orders`, `GET /v1/orders/:orderId`
 - `GET /v1/payments/:paymentId`
 - `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
 - `POST /v1/payment-links`, `GET /v1/payment-links`, `GET /v1/payment-links/:paymentId`, `PATCH /v1/payment-links/:paymentId`, `DELETE /v1/payment-links/:paymentId`
@@ -92,6 +92,8 @@ curl -X POST http://localhost:8080/v1/payment-links \
 The response contains `checkoutUrl` and `qrUrl`. The QR encodes that same `checkoutUrl`; it resolves to the server-owned payment ID and canonical payment details. The hosted page is responsive and supports EIP-1193 wallets on Base.
 
 Every merchant-owned read is scoped to the authenticated merchant. The ledger database trigger rejects updates and deletes.
+
+Merchant order visibility is available through `GET /v1/orders` (list, newest first, optional `status` filter, bounded `limit`) and `GET /v1/orders/:orderId` (detail). Each order reports its id, reference, description, amount, currency, order status (`CREATED`, `PENDING`, `PAID`, `FAILED`, `EXPIRED`, `CANCELLED`), the linked payment status, and creation/update timestamps; results are always scoped to the authenticated merchant. The merchant dashboard "Orders" page lists orders with the existing status filter and a **Details** action that opens the full order record. Order creation remains `POST /v1/orders` through the existing Payment Core; no new order system is introduced.
 
 Production startup requires explicit database, admin, API-key pepper, public URL, and webhook encryption configuration. Admin and pepper secrets must be distinct random values of at least 32 characters; `PUBLIC_BASE_URL` and `BASE_RPC_URL` must use HTTPS. Configure `TRUST_PROXY` only with the IPs/CIDRs of trusted reverse proxies; forwarded client addresses are not trusted by default. API requests are rate-limited per client address, and responses include basic content-type, framing, referrer, permissions, and CSP protections. Production webhook delivery pins the validated DNS answer to the outbound connection to prevent DNS-rebinding SSRF.
 

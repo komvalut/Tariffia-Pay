@@ -40,7 +40,7 @@ const tables = {
   },
   merchant: {
     customers: { title: 'Customers', endpoint: 'customers', description: 'Your customer records. Customer creation uses the existing customer API.', columns: [['name', 'Name'], ['email', 'Email'], ['externalId', 'External ID'], ['createdAt', 'Created']], form: 'customer' },
-    orders: { title: 'Orders', endpoint: 'orders', description: 'Orders created through the existing Payment Core.', columns: [['description', 'Order'], ['customer', 'Customer'], ['reference', 'Reference'], ['amount', 'Amount'], ['status', 'Order'], ['paymentStatus', 'Payment'], ['createdAt', 'Created']], filter: ['CREATED', 'PENDING', 'PAID', 'FAILED', 'EXPIRED', 'CANCELLED'] },
+    orders: { title: 'Orders', endpoint: 'orders', description: 'Orders created through the existing Payment Core.', columns: [['description', 'Order'], ['customer', 'Customer'], ['reference', 'Reference'], ['amount', 'Amount'], ['status', 'Order'], ['paymentStatus', 'Payment'], ['createdAt', 'Created']], filter: ['CREATED', 'PENDING', 'PAID', 'FAILED', 'EXPIRED', 'CANCELLED'], actions: 'order' },
     payments: { title: 'Payments', endpoint: 'payments', description: 'Payment state and verified Base transaction hashes.', columns: [['description', 'Description'], ['amount', 'Amount'], ['network', 'Network'], ['status', 'Status'], ['transactionHash', 'Transaction'], ['failureReason', 'Reason'], ['createdAt', 'Created']], filter: ['PENDING', 'DETECTED', 'VERIFYING', 'CONFIRMED', 'FAILED', 'EXPIRED'] },
     'payment-links': { title: 'Payment links', endpoint: 'payment-links', description: 'Hosted links backed by the same order and payment records. Pausing or deleting a link only affects the link, not the payment.', columns: [['description', 'Description'], ['amount', 'Amount'], ['currency', 'Currency'], ['status', 'Payment'], ['enabled', 'Link'], ['expiresAt', 'Expires'], ['createdAt', 'Created'], ['paymentId', 'Checkout']], filter: ['PENDING', 'DETECTED', 'CONFIRMED', 'FAILED', 'EXPIRED'], form: 'payment-link', actions: 'payment-link' },
     'credit-accounts': { title: 'Credit balances', endpoint: 'credit-accounts', description: 'Per-customer balances from the existing Credit Engine.', columns: [['name', 'Customer'], ['email', 'Email'], ['externalId', 'External ID'], ['balanceUnits', 'Balance'], ['updatedAt', 'Updated']], form: 'topup' },
@@ -469,6 +469,7 @@ function actionMarkup(action, row) {
   if (action === 'model') return `<button class="button small" data-edit-model="${esc(row.id)}">Edit pricing</button> <button class="button small" data-toggle-config="model" data-id="${esc(row.id)}">${row.enabled ? 'Disable' : 'Enable'}</button>`;
   if (action === 'merchant-webhook') return `<button class="button small" data-toggle-webhook="${esc(row.id)}" data-enabled="${row.enabled}">${row.enabled ? 'Pause' : 'Resume'}</button> <button class="button small danger" data-delete-webhook="${esc(row.id)}">Delete</button>`;
   if (action === 'payment-link') return `<button class="button small" data-toggle-payment-link="${esc(row.paymentId)}" data-enabled="${row.enabled}">${row.enabled ? 'Disable' : 'Enable'}</button> <button class="button small danger" data-delete-payment-link="${esc(row.paymentId)}">Delete</button>`;
+  if (action === 'order') return `<button class="button small" data-order-detail="${esc(row.id)}">Details</button>`;
   if (action === 'admin-attempts' || action === 'merchant-attempts') return `<button class="button small" data-attempts="${esc(row.id)}" data-endpoint="${esc(row.endpointId ?? '')}">Attempts</button>`;
   return '';
 }
@@ -629,6 +630,22 @@ function attachRowActions(container, page, config, rows) {
       notify('Payment link deleted.');
       loadCollectionRows(container, page, config);
     } catch (error) { notify(error.message); button.disabled = false; }
+  }));
+  container.querySelectorAll('[data-order-detail]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const result = await api(`/v1/orders/${encodeURIComponent(button.dataset.orderDetail)}`);
+      const order = result.order ?? {};
+      const fields = [
+        ['Order ID', order.id], ['Reference', order.reference ?? '—'], ['Description', order.description],
+        ['Amount', `${order.amount} ${order.currency}`], ['Order status', order.status],
+        ['Payment status', order.paymentStatus], ['Payment ID', order.paymentId ?? '—'],
+        ['Network', order.network ?? '—'], ['Transaction', order.transactionId ?? '—'],
+        ['Expires', order.expiresAt ? formatDate(order.expiresAt) : '—'],
+        ['Created', formatDate(order.createdAt)], ['Updated', formatDate(order.updatedAt)],
+      ];
+      showModal('Order details', `<div class="table-wrap"><table><tbody>${fields.map(([label, value]) => `<tr><th>${esc(label)}</th><td>${esc(value ?? '—')}</td></tr>`).join('')}</tbody></table></div>`, 'Order');
+    } catch (error) { notify(error.message); } finally { button.disabled = false; }
   }));
 }
 
