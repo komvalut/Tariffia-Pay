@@ -296,3 +296,12 @@ export const createSmsServiceSchema = z.object({
 }).strict();
 
 export const updateSmsServiceSchema = createSmsServiceSchema;
+
+const merchantUsageLimit = z.number().int().min(0).max(1_000_000).nullable();
+
+export const updateMerchantUsageLimitsSchema = z.object({
+  /** Null means "use the configured default"; 0 means unlimited for this merchant. */
+  generalRequestsPerMinute: merchantUsageLimit,
+  aiRequestsPerMinute: merchantUsageLimit,
+  smsRequestsPerMinute: merchantUsageLimit,
+}).strict();

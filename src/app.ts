@@ -39,6 +39,8 @@ import { SmsProviderRegistry } from './sms-providers/registry.js';
 import { SmsGatewayService } from './services/sms-gateway-service.js';
 import { smsRoutes } from './modules/sms.js';
 import { adminSmsRoutes } from './modules/admin-sms.js';
+import { merchantUsageRoutes } from './modules/usage.js';
+import { MerchantUsageService } from './services/merchant-usage-service.js';
 
 type AppOptions = {
   db: Database;
@@ -49,9 +51,10 @@ type AppOptions = {
   smsProviderRegistry?: SmsProviderRegistry;
   verification?: PaymentVerificationService;
   creditEngine?: CreditEngine;
+  merchantUsage?: MerchantUsageService;
 };
 
-export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, aiProviderRegistry, smsProviderRegistry, verification, creditEngine }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, aiProviderRegistry, smsProviderRegistry, verification, creditEngine, merchantUsage }: AppOptions): Promise<FastifyInstance> {
   if (migrate) await migrate();
   let adapters = adapterRegistry;
   if (!adapters && paymentAdapter) {
@@ -70,6 +73,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   const smsProviders = smsProviderRegistry ?? createDefaultSmsProviderRegistry();
   await smsProviders.initialize();
   const smsGateway = new SmsGatewayService(db, aiPricing, smsProviders);
+  const merchantUsageService = merchantUsage ?? new MerchantUsageService(db);
   const subscriptions = new SubscriptionService(db, paymentCore, adapters);
   await credits.initialize();
   paymentVerification.addLifecycleHandler(credits);
@@ -132,6 +136,23 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
     return reply.send({ status: 'ok', service: 'tariffia-pay-api' });
   });
 
+  // Per-merchant request usage counters and rate limits. Applied as a preHandler so it
+  // runs after the existing global per-address limiter and before every route handler;
+  // admin, public and unauthenticated requests are neither counted nor limited here.
+  app.addHook('preHandler', async (request, reply) => {
+    const outcome = await merchantUsageService.checkRequest({
+      authorization: request.headers.authorization,
+      url: request.url,
+    });
+    if (!outcome?.exceeded) return;
+    reply.header('retry-after', String(outcome.retryAfterSeconds));
+    throw new HttpError(
+      429,
+      `Merchant ${outcome.category} request rate limit exceeded; retry later`,
+      'merchant_rate_limited',
+    );
+  });
+
   app.get('/ready', async (_request, reply) => {
     try {
       await db.query('SELECT 1');
@@ -160,6 +181,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   await app.register(aiRoutes, { db, aiPricing, aiGateway, aiProviders });
   await app.register(smsRoutes, { db, smsGateway });
   await app.register(adminSmsRoutes, { db, smsProviders });
+  await app.register(merchantUsageRoutes, { db, merchantUsage: merchantUsageService });
   await app.register(ledgerRoutes, { db });
   await app.register(dashboardRoutes, { db });
   if (config.NODE_ENV !== 'test') {
