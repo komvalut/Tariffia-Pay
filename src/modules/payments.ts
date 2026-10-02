@@ -3,6 +3,7 @@ import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { parseBody, requireMerchant } from '../http.js';
 import { verifyPaymentSchema } from '../schemas.js';
+import { paymentStatusLabel } from '../payment-status.js';
 import { getPaymentInvoice, merchantInvoiceView } from './billing-documents.js';
 import type { PaymentAdapterRegistry } from '../payment-adapters/registry.js';
 import type { PaymentVerificationService } from '../services/payment-verification-service.js';
@@ -22,7 +23,8 @@ export const paymentRoutes: FastifyPluginAsync<{
       [paymentId, merchant.id],
     );
     if (!result.rows[0]) throw new HttpError(404, 'Payment not found', 'not_found');
-    return reply.send({ payment: result.rows[0] });
+    const payment = result.rows[0] as { status: string };
+    return reply.send({ payment: { ...payment, statusLabel: paymentStatusLabel(payment.status) } });
   });
 
   // Payment details connect existing payment/order data with the existing invoice/receipt system.
@@ -59,6 +61,7 @@ export const paymentRoutes: FastifyPluginAsync<{
         amountBaseUnits: row.amountBaseUnits,
         currency: row.currency,
         status: row.status,
+        statusLabel: paymentStatusLabel(row.status),
         paymentMethod: { id: row.adapter, name: adapters.getManifest(row.adapter)?.name ?? row.adapter },
         network: row.network,
         recipientAddress: row.recipientAddress,

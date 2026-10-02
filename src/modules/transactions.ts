@@ -2,8 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { requireMerchant } from '../http.js';
-
-const paymentStatuses = ['CREATED', 'PENDING', 'DETECTED', 'VERIFYING', 'CONFIRMED', 'FAILED', 'EXPIRED', 'REFUNDED'] as const;
+import { paymentStatusLabel, paymentStatuses } from '../payment-status.js';
 
 function pageLimit(value: string | undefined): number {
   return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
@@ -17,6 +16,10 @@ const transactionSelect = `SELECT p.id AS "paymentId", p.order_id AS "orderId", 
   p.created_at AS "createdAt"
   FROM payments p JOIN orders o ON o.id = p.order_id
  WHERE p.merchant_id = $1`;
+
+function transactionView(row: Record<string, unknown>) {
+  return { ...row, statusLabel: paymentStatusLabel(String(row.status)) };
+}
 
 export const transactionRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
   app.get('/v1/transactions', async (request, reply) => {
@@ -37,7 +40,7 @@ export const transactionRoutes: FastifyPluginAsync<{ db: Database }> = async (ap
         ORDER BY p.created_at DESC, p.id DESC LIMIT $4`,
       [merchant.id, status, network, pageLimit(query.limit)],
     );
-    return reply.send({ transactions: result.rows });
+    return reply.send({ transactions: result.rows.map(transactionView) });
   });
 
   app.get('/v1/transactions/:paymentId', async (request, reply) => {
@@ -45,6 +48,6 @@ export const transactionRoutes: FastifyPluginAsync<{ db: Database }> = async (ap
     const { paymentId } = request.params as { paymentId: string };
     const result = await db.query(`${transactionSelect} AND p.id = $2`, [merchant.id, paymentId]);
     if (!result.rows[0]) throw new HttpError(404, 'Transaction not found', 'not_found');
-    return reply.send({ transaction: result.rows[0] });
+    return reply.send({ transaction: transactionView(result.rows[0]) });
   });
 };

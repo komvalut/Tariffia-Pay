@@ -42,7 +42,7 @@ const tables = {
   },
   merchant: {
     customers: { title: 'Customers', endpoint: 'customers', description: 'Your customer records. Customer creation uses the existing customer API.', columns: [['name', 'Name'], ['email', 'Email'], ['externalId', 'External ID'], ['createdAt', 'Created']], form: 'customer', actions: 'customer' },
-    orders: { title: 'Orders', endpoint: 'orders', description: 'Orders created through the existing Payment Core.', columns: [['description', 'Order'], ['customer', 'Customer'], ['reference', 'Reference'], ['amount', 'Amount'], ['status', 'Order'], ['paymentStatus', 'Payment'], ['createdAt', 'Created']], filter: ['CREATED', 'PENDING', 'PAID', 'FAILED', 'EXPIRED', 'CANCELLED'], actions: 'order' },
+    orders: { title: 'Orders', endpoint: 'orders', description: 'Orders created through the existing Payment Core.', columns: [['description', 'Order'], ['customer', 'Customer'], ['reference', 'Reference'], ['amount', 'Amount'], ['status', 'Order'], ['paymentStatus', 'Payment'], ['__statusTime', 'Status time']], filter: ['CREATED', 'PENDING', 'PAID', 'FAILED', 'EXPIRED', 'CANCELLED'], actions: 'order' },
     payments: { title: 'Payments', endpoint: 'payments', description: 'Payment state and verified Base transaction hashes.', columns: [['description', 'Description'], ['amount', 'Amount'], ['network', 'Network'], ['status', 'Status'], ['transactionHash', 'Transaction'], ['failureReason', 'Reason'], ['createdAt', 'Created']], filter: ['PENDING', 'DETECTED', 'VERIFYING', 'CONFIRMED', 'FAILED', 'EXPIRED'] },
     'payment-links': { title: 'Payment links', endpoint: 'payment-links', description: 'Hosted links backed by the same order and payment records. Pausing or deleting a link only affects the link, not the payment.', columns: [['description', 'Description'], ['amount', 'Amount'], ['currency', 'Currency'], ['status', 'Payment'], ['enabled', 'Link'], ['expiresAt', 'Expires'], ['createdAt', 'Created'], ['paymentId', 'Checkout']], filter: ['PENDING', 'DETECTED', 'CONFIRMED', 'FAILED', 'EXPIRED'], form: 'payment-link', actions: 'payment-link' },
     'credit-accounts': { title: 'Credit balances', endpoint: 'credit-accounts', description: 'Per-customer balances from the existing Credit Engine.', columns: [['name', 'Customer'], ['email', 'Email'], ['externalId', 'External ID'], ['balanceUnits', 'Balance'], ['updatedAt', 'Updated']], form: 'topup' },
@@ -288,11 +288,10 @@ async function renderMerchantTransactions(container) {
     const rows = transactions.map((transaction) => `<tr>
         <td>${esc(transaction.description ?? '—')}</td>
         <td>${esc(formatMoney(transaction.amount, transaction.currency ?? 'USDC'))}</td>
-        <td><span class="pill ${statusTone(transaction.status)}">${esc(transaction.status)}</span></td>
+        <td><span class="pill ${statusTone(transaction.status)}">${esc(transaction.statusLabel ?? transaction.status)}</span></td>
         <td>${esc(transaction.network ?? '—')}</td>
         <td>${transaction.transactionHash ? `<span class="mono" title="${esc(transaction.transactionHash)}">${esc(String(transaction.transactionHash).slice(0, 13))}…${esc(String(transaction.transactionHash).slice(-8))}</span>` : '—'}</td>
-        <td>${esc(formatDate(transaction.createdAt))}</td>
-        <td>${esc(transaction.confirmedAt ? formatDate(transaction.confirmedAt) : '—')}</td>
+        <td>${esc(statusTimeLabel(transaction.status, transaction))}</td>
         <td><button class="button small" data-transaction-detail="${esc(transaction.paymentId)}">Details</button></td>
       </tr>`).join('');
     container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Merchant data</div><h1>Transactions</h1><p>Your payments across the configured networks. No private keys or secrets are shown.</p></div><button class="button" data-refresh-transactions>Refresh</button></div>
@@ -300,7 +299,7 @@ async function renderMerchantTransactions(container) {
         <label class="field filter-field"><span>Status</span><select data-tx-status><option value="">All</option>${TRANSACTION_STATUSES.map((status) => `<option value="${status}"${filters.status === status ? ' selected' : ''}>${status}</option>`).join('')}</select></label>
         <label class="field filter-field"><span>Network</span><input data-tx-network placeholder="base" value="${esc(filters.network)}"></label>
         <button class="button" data-tx-apply>Apply filters</button></div>
-        ${transactions.length ? `<div class="table-wrap"><table><thead><tr><th>Description</th><th>Amount</th><th>Status</th><th>Network</th><th>Transaction</th><th>Created</th><th>Confirmed</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state">No transactions match these filters.</div>'}</section>`;
+        ${transactions.length ? `<div class="table-wrap"><table><thead><tr><th>Description</th><th>Amount</th><th>Status</th><th>Network</th><th>Transaction</th><th>Status time</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state">No transactions match these filters. Adjust the status or network filter, or create a payment first.</div>'}</section>`;
     container.querySelector('[data-refresh-transactions]').addEventListener('click', render);
     container.querySelector('[data-tx-status]').addEventListener('change', (event) => { filters.status = event.target.value; render(); });
     container.querySelector('[data-tx-network]').addEventListener('change', (event) => { filters.network = event.target.value.trim(); render(); });
@@ -489,7 +488,8 @@ function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
     id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' : id === 'webhooks' ? 'Webhooks' :
     id === 'transactions' ? 'Transactions' : id === 'settings' ? 'Settings' : id === 'notifications' ? 'Notifications' :
-    (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));  document.querySelector('#crumb-current').textContent = title;
+    (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));
+  document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
   return title;
 }
@@ -613,7 +613,11 @@ function tableMarkup(rows, config) {
 
 function cellValue(key, value, row) {
   if (key === 'enabled') return `<span class="pill ${value ? 'good' : 'bad'}">${value ? 'Enabled' : 'Disabled'}</span>`;
-  if (key.toLowerCase().includes('status') || ['status', 'type'].includes(key)) return `<span class="pill ${statusTone(value)}">${esc(value)}</span>`;
+  if (key === '__statusTime') return esc(statusTimeLabel(row.paymentStatus ?? row.status, row));
+  if (key.toLowerCase().includes('status') || ['status', 'type'].includes(key)) {
+    const label = row[`${key}Label`] ?? statusLabel(value);
+    return `<span class="pill ${statusTone(value)}">${esc(label === null || label === undefined ? '—' : label)}</span>`;
+  }
   if (key === 'balanceUnits' || key === 'creditUnits' || key === 'balanceAfterUnits' || key === 'creditsDeductedUnits') return `<span class="mono">${esc(formatCredits(value))}</span>`;
   if (key === 'amount' || key === 'amountUsdc') return esc(formatMoney(value, key === 'amountUsdc' || row.currency === 'USDC' ? 'USDC' : row.currency === 'CREDITS' ? 'CREDITS' : 'USD'));
   if (['providerCostUsd', 'customerPriceUsd', 'profitUsd', 'pricePerRequestUsd', 'inputPricePer1kUsd', 'outputPricePer1kUsd', 'providerCostPerRequestUsd', 'customerPricePerRequestUsd', 'providerInputCostPer1kUsd', 'customerInputPricePer1kUsd', 'providerOutputCostPer1kUsd', 'customerOutputPricePer1kUsd'].includes(key)) return esc(value === null ? 'Markup-derived' : formatMoney(value));
@@ -630,6 +634,31 @@ function statusTone(value) {
   if (['PAID', 'CONFIRMED', 'CREDITED', 'SUCCEEDED', 'ACTIVE', 'TOPUP', 'ENABLED'].includes(status)) return 'good';
   if (['FAILED', 'EXPIRED', 'CANCELLED', 'SUSPENDED'].includes(status)) return 'bad';
   return 'pending';
+}
+
+const STATUS_LABELS = {
+  CREATED: 'Created', PENDING: 'Pending', DETECTED: 'Detected', VERIFYING: 'Verifying',
+  CONFIRMED: 'Confirmed', FAILED: 'Failed', EXPIRED: 'Expired', REFUNDED: 'Refunded',
+  PAID: 'Paid', CANCELLED: 'Cancelled', SUSPENDED: 'Suspended', ACTIVE: 'Active',
+};
+
+function statusLabel(value) {
+  const status = String(value ?? '').toUpperCase();
+  return STATUS_LABELS[status] ?? (value ?? '—');
+}
+
+/**
+ * The timestamp that matters for the current status: when it confirmed, was detected, is due
+ * to expire, or was created otherwise.
+ */
+function statusTimeLabel(status, row) {
+  const state = String(status ?? '').toUpperCase();
+  if (state === 'CONFIRMED' && row.confirmedAt) return `Confirmed · ${formatDate(row.confirmedAt)}`;
+  if ((state === 'DETECTED' || state === 'VERIFYING') && row.detectedAt) return `Detected · ${formatDate(row.detectedAt)}`;
+  if (state === 'EXPIRED' && row.expiresAt) return `Expired · ${formatDate(row.expiresAt)}`;
+  if (state === 'FAILED') return `Created · ${formatDate(row.createdAt)}`;
+  if (state === 'REFUNDED' && row.confirmedAt) return `Refunded · ${formatDate(row.confirmedAt)}`;
+  return `Created · ${formatDate(row.createdAt)}`;
 }
 
 function actionMarkup(action, row) {

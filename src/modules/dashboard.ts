@@ -161,7 +161,8 @@ const merchantCollections: Record<string, Collection> = {
   orders: {
     select: `o.id, o.customer_id AS "customerId", COALESCE(c.name, c.email, c.external_id) AS customer,
       o.reference, o.description, o.amount::text AS amount, o.currency, o.status,
-      p.status AS "paymentStatus", o.created_at AS "createdAt"`,
+      p.status AS "paymentStatus", p.detected_at AS "detectedAt", p.confirmed_at AS "confirmedAt",
+      p.expires_at AS "expiresAt", o.created_at AS "createdAt"`,
     from: 'orders o LEFT JOIN customers c ON c.id = o.customer_id LEFT JOIN payments p ON p.order_id = o.id',
     search: ['o.reference', 'o.description', 'c.name', 'c.email', 'o.id::text'], orderBy: 'o.created_at DESC', status: 'o.status', tenant: 'o.merchant_id = $1',
   },
