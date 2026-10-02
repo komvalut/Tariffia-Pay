@@ -20,6 +20,7 @@ const navItems = {
     ['payment-links', 'Payment links'], ['credit-accounts', 'Credit balances'], ['topups', 'Credit top-ups'],
     ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhooks', 'Webhooks'],
     ['webhook-endpoints', 'Webhook settings'], ['webhook-deliveries', 'Delivery history'], ['settings', 'Settings'],
+    ['notifications', 'Notifications'],
   ],
 };
 
@@ -391,6 +392,42 @@ async function renderMerchantSettings(container) {
   });
 }
 
+async function renderMerchantNotifications(container) {
+  const response = await api('/v1/notification-preferences');
+  const preferences = response.preferences ?? {};
+  const toggles = [
+    ['paymentConfirmed', 'Payment confirmed', 'A payment was independently verified on-chain.'],
+    ['paymentFailed', 'Payment failed', 'A payment could not be completed.'],
+    ['paymentExpired', 'Payment expired', 'A payment request expired before confirmation.'],
+    ['creditTopup', 'Credit top-up', 'Credits were added to a customer account.'],
+    ['aiRequestFailed', 'AI request failed', 'An AI provider request failed.'],
+    ['smsRequestFailed', 'SMS request failed', 'An SMS or OTP delivery failed.'],
+    ['webhookFailed', 'Webhook delivery failed', 'A webhook delivery exhausted its retries.'],
+  ];
+  container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Merchant data</div><h1>Notifications</h1><p>Choose which events you want to be notified about. These preferences are stored now; message delivery is enabled in a later phase.</p></div></div>
+    <section class="panel form-panel"><div class="panel-head"><div><h2>Event notifications</h2><p>All events are enabled by default.</p></div></div>
+      <form data-form="notifications" class="form-grid">
+        ${toggles.map(([key, label, note]) => `<label class="check-chip span-2"><input type="checkbox" name="${key}" role="switch"${preferences[key] !== false ? ' checked' : ''}><span><strong>${esc(label)}</strong> — ${esc(note)}</span></label>`).join('')}
+        <div class="form-actions"><button class="button primary">Save preferences</button><span class="notice" data-notice></span></div>
+      </form></section>`;
+  container.querySelector('form[data-form="notifications"]').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    const notice = form.querySelector('[data-notice]');
+    button.disabled = true; notice.className = 'notice'; notice.textContent = 'Saving…';
+    try {
+      const body = {};
+      for (const [key] of toggles) body[key] = form.elements.namedItem(key).checked;
+      await api('/v1/notification-preferences', { method: 'PUT', body: JSON.stringify(body) });
+      notice.className = 'notice success'; notice.textContent = 'Preferences saved.';
+      notify('Notification preferences saved.');
+    } catch (error) {
+      notice.className = 'notice error'; notice.textContent = error.message;
+    } finally { button.disabled = false; }
+  });
+}
+
 function setTheme(theme) {
   document.body.dataset.theme = theme;
   localStorage.setItem('tariffia-theme', theme);
@@ -451,7 +488,7 @@ function renderShell() {
 function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
     id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' : id === 'webhooks' ? 'Webhooks' :
-    id === 'transactions' ? 'Transactions' : id === 'settings' ? 'Settings' :
+    id === 'transactions' ? 'Transactions' : id === 'settings' ? 'Settings' : id === 'notifications' ? 'Notifications' :
     (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));  document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
   return title;
@@ -472,6 +509,7 @@ async function openPage(id) {
     else if (role === 'merchant' && id === 'webhooks') await renderMerchantWebhooks(container);
     else if (role === 'merchant' && id === 'transactions') await renderMerchantTransactions(container);
     else if (role === 'merchant' && id === 'settings') await renderMerchantSettings(container);
+    else if (role === 'merchant' && id === 'notifications') await renderMerchantNotifications(container);
     else if (role === 'merchant' && id === 'ai-models') await renderMerchantModels(container);
     else await renderCollectionPage(container, id, title);
   } catch (error) {

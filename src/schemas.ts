@@ -327,3 +327,14 @@ export const updateMerchantSettingsSchema = z.object({
   defaultCurrency: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9]{2,11}$/).nullable().default(null),
   timezone: timezoneName.nullable().default(null),
 }).strict();
+
+// Every notification toggle is an explicit boolean; `.strict()` rejects unknown fields.
+export const updateNotificationPreferencesSchema = z.object({
+  paymentConfirmed: z.boolean(),
+  paymentFailed: z.boolean(),
+  paymentExpired: z.boolean(),
+  creditTopup: z.boolean(),
+  aiRequestFailed: z.boolean(),
+  smsRequestFailed: z.boolean(),
+  webhookFailed: z.boolean(),
+}).strict();
