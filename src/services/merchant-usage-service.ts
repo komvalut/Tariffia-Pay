@@ -26,6 +26,17 @@ export type MerchantUsageCheck = {
   windowStart: Date;
 };
 
+export type MerchantUsageCategorySummary = {
+  used: number;
+  limit: number | null;
+  unlimited: boolean;
+  remaining: number | null;
+  windowStart: Date;
+  windowResetAt: Date;
+};
+
+export type MerchantUsageSummary = Record<MerchantUsageCategory, MerchantUsageCategorySummary>;
+
 const limitColumns: Record<MerchantUsageCategory, 'general_requests_per_minute' | 'ai_requests_per_minute' | 'sms_requests_per_minute'> = {
   general: 'general_requests_per_minute',
   ai: 'ai_requests_per_minute',
@@ -179,6 +190,29 @@ export class MerchantUsageService {
       windowStart,
       windowResetAt: new Date(windowStart.getTime() + this.window.windowMs),
     };
+  }
+
+  /**
+   * Merchant-safe usage summary for the authenticated merchant: per category the current
+   * window usage, the effective limit (null and flagged when unlimited), the remaining
+   * requests and the window reset time. Never exposes other merchants or admin internals.
+   */
+  async usageSummaryForMerchant(merchantId: string): Promise<MerchantUsageSummary> {
+    const detail = await this.usageForMerchant(merchantId);
+    const summary = {} as MerchantUsageSummary;
+    for (const category of ['general', 'ai', 'sms'] as MerchantUsageCategory[]) {
+      const limit = detail.limits[category];
+      const used = detail.counts[category];
+      summary[category] = {
+        used,
+        limit: limit.unlimited ? null : limit.limit,
+        unlimited: limit.unlimited,
+        remaining: limit.unlimited ? null : Math.max(0, limit.limit - used),
+        windowStart: detail.windowStart,
+        windowResetAt: detail.windowResetAt,
+      };
+    }
+    return summary;
   }
 
   /** Lists every merchant with its effective limits and current-window usage. */

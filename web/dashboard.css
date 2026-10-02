@@ -86,6 +86,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stat-label { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
 .stat-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 clamp(24px, 3vw, 34px)/1 Georgia, serif; letter-spacing: -.04em; }
 .stat-foot { color: var(--muted); font-size: 11px; }
+.usage-track { height: 7px; margin: 10px 0 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.usage-fill { display: block; height: 100%; border-radius: 999px; background: #2f6f4f; transition: width .25s ease; }
+.usage-fill.full { background: #b45309; }
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(250px, .65fr); gap: 15px; }
 .panel { min-width: 0; padding: 20px; }
 .panel-head { margin-bottom: 18px; display: flex; align-items: center; justify-content: space-between; gap: 15px; }

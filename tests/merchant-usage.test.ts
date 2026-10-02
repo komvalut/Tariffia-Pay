@@ -281,4 +281,70 @@ describe('per-merchant usage counters and rate limits', () => {
     });
     expect(detail.json().counts.ai).toBe(3);
   });
+
+  it('lets a merchant read its own usage with correct per-category values', async () => {
+    await setLimits(merchantId, { aiRequestsPerMinute: 5 });
+    expect((await general(apiKey)).statusCode).toBe(201);
+    expect((await ai(apiKey)).statusCode).toBe(200);
+    expect((await sms(apiKey)).statusCode).toBe(200);
+
+    const response = await app.inject({ method: 'GET', url: '/v1/usage', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(response.statusCode).toBe(200);
+    const usage = response.json().usage;
+    // The usage request itself is a general merchant request and is counted before the handler.
+    expect(usage.general).toMatchObject({ used: 2, limit: 300, unlimited: false, remaining: 298 });
+    expect(usage.ai).toMatchObject({ used: 1, limit: 5, unlimited: false, remaining: 4 });
+    expect(usage.sms).toMatchObject({ used: 1, limit: 60, unlimited: false, remaining: 59 });
+    expect(response.body).not.toContain(apiKey);
+    // Admin-only internals (the default/override source) are not exposed to merchants.
+    expect(usage.ai).not.toHaveProperty('source');
+  });
+
+  it('reports unlimited and effective override limits for a merchant', async () => {
+    const unlimitedOverride = await setLimits(merchantId, { aiRequestsPerMinute: 0 });
+    expect(unlimitedOverride.json().limits.ai).toMatchObject({ unlimited: true });
+    const response = await app.inject({ method: 'GET', url: '/v1/usage', headers: { authorization: `Bearer ${apiKey}` } });
+    const usage = response.json().usage;
+    expect(usage.ai).toMatchObject({ limit: null, unlimited: true, remaining: null });
+    expect(usage.ai.used).toBeGreaterThanOrEqual(0);
+    // Untouched categories keep the configured defaults.
+    expect(usage.sms).toMatchObject({ limit: 60, unlimited: false });
+  });
+
+  it('returns window and reset information and rejects unauthenticated access', async () => {
+    const before = Date.now();
+    const authorized = await app.inject({ method: 'GET', url: '/v1/usage', headers: { authorization: `Bearer ${apiKey}` } });
+    const usage = authorized.json().usage;
+    const resetAt = new Date(usage.general.windowResetAt).getTime();
+    const windowStart = new Date(usage.general.windowStart).getTime();
+    expect(resetAt).toBeGreaterThan(before - 1000);
+    expect(resetAt - windowStart).toBe(WINDOW_MS);
+    expect(windowStart).toBeLessThanOrEqual(before + 1000);
+
+    const anonymous = await app.inject({ method: 'GET', url: '/v1/usage' });
+    expect(anonymous.statusCode).toBe(401);
+    const invalidKey = await app.inject({
+      method: 'GET', url: '/v1/usage', headers: { authorization: 'Bearer not-a-real-key' },
+    });
+    expect(invalidKey.statusCode).toBe(401);
+  });
+
+  it('never exposes another merchant usage to a merchant session', async () => {
+    const other = await createMerchant('Other Store', 'other@example.com', '0xcccccccccccccccccccccccccccccccccccccccc');
+    await setLimits(other.merchantId, { aiRequestsPerMinute: 7 });
+    // The other merchant uses its own counter and override.
+    expect((await ai(other.apiKey)).statusCode).toBe(200);
+
+    const myUsage = await app.inject({ method: 'GET', url: '/v1/usage', headers: { authorization: `Bearer ${apiKey}` } });
+    expect(myUsage.json().usage.ai).toMatchObject({ used: 0, limit: 60, remaining: 60 });
+    expect(myUsage.body).not.toContain(other.merchantId);
+    expect(myUsage.body).not.toContain('other@example.com');
+
+    // A merchant key cannot reach the admin usage endpoints.
+    const adminEndpoint = await app.inject({
+      method: 'GET', url: `/v1/admin/usage/merchants/${other.merchantId}`,
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(adminEndpoint.statusCode).toBe(401);
+  });
 });

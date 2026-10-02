@@ -1,12 +1,17 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireAdmin } from '../http.js';
+import { parseBody, requireAdmin, requireMerchant } from '../http.js';
 import { updateMerchantUsageLimitsSchema } from '../schemas.js';
 import type { MerchantUsageService } from '../services/merchant-usage-service.js';
 
 export const merchantUsageRoutes: FastifyPluginAsync<{ db: Database; merchantUsage: MerchantUsageService }> =
   async (app, { db, merchantUsage }) => {
+    app.get('/v1/usage', async (request, reply) => {
+      const merchant = await requireMerchant(request, db);
+      return reply.send({ usage: await merchantUsage.usageSummaryForMerchant(merchant.id) });
+    });
+
     app.get('/v1/admin/usage/merchants', async (request, reply) => {
       requireAdmin(request);
       return reply.send({ usage: await merchantUsage.listUsage() });

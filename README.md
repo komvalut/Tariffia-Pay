@@ -70,6 +70,7 @@ Other merchant endpoints:
 - `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
 - `POST /v1/credits/topups`, `POST /v1/credits/deductions`
 - `GET /v1/credits/:customerId/balance`, `/topups`, `/usage`
+- `GET /v1/usage`
 - Admin: `GET/PUT /v1/admin/credits/settings`, `GET /v1/admin/credits/accounts`, `GET /v1/admin/credits/transactions`
 - AI: `GET /v1/ai/models`, `POST /v1/ai/chat/completions`, `POST /v1/ai/chat/stream`, `POST /v1/ai/usage`, `GET /v1/ai/usage`
 - Admin AI: `GET/POST /v1/admin/ai/providers`, `PUT /v1/admin/ai/providers/:providerId`, `GET /v1/admin/ai/models`, `POST /v1/admin/ai/providers/:providerId/models`, `PUT /v1/admin/ai/models/:modelId`, `GET /v1/admin/ai/usage`, `GET /v1/admin/ai/requests`
@@ -236,6 +237,8 @@ Tariffia keeps a per-merchant request counter and enforces a per-merchant reques
 Counts use fixed one-minute windows. The window row is seeded idempotently and incremented with a single conditional `UPDATE ... WHERE request_count < limit`, so concurrent requests for the same merchant and window cannot overshoot the limit. When the effective limit is exceeded, the merchant API returns `429` with the error code `merchant_rate_limited`, a clear message naming the category, and a `Retry-After` header for the current window; the request is not passed to the route handler.
 
 Limits are configurable per deployment (`MERCHANT_GENERAL_REQUESTS_PER_MINUTE` default `300`, `MERCHANT_AI_REQUESTS_PER_MINUTE` default `60`, `MERCHANT_SMS_REQUESTS_PER_MINUTE` default `60`) and per merchant: a per-merchant override value `0` means unlimited, a positive value is the limit, and no override uses the configured default. Administrators can inspect and change limits with `GET /v1/admin/usage/merchants`, `GET /v1/admin/usage/merchants/:merchantId` and `PUT /v1/admin/usage/merchants/:merchantId` (body `{ "generalRequestsPerMinute": 300, "aiRequestsPerMinute": 60, "smsRequestsPerMinute": 60 }`; `null` clears an override). Counters record only merchant, category, window and count — never prompts, completions, SMS content or OTP codes.
+
+Merchants can see their own usage with `GET /v1/usage`, which returns each category's current-window usage, effective limit (`null` and `unlimited: true` when the merchant override is `0`), remaining requests and the window reset time — scoped to the authenticated merchant only. The merchant dashboard has a matching **API usage** page with a used/limit progress indicator, remaining requests and the reset time.
 
 ## SMS and OTP Services
 Tariffia's second metered V1 service is OTP/SMS delivery, built on the same provider abstraction, pricing engine, credit accounts and ledger as the AI service. A formal `SmsProvider` contract (`src/sms-provider.ts`) with capabilities, health checks and normalized errors is registered in a server-side registry (`src/sms-providers/`). The bundled integration is an HTTP SMS provider configured exclusively through environment secrets (`SMS_HTTP_BASE_URL`, `SMS_HTTP_API_KEY`, `SMS_HTTP_TIMEOUT_MS`, `SMS_HTTP_SEND_PATH`, `SMS_HTTP_HEALTH_PATH`); the provider API key is never stored in the database, returned by any endpoint, or written to logs. Disable the integration entirely with `SMS_PROVIDER_ENABLED=false`.

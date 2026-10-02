@@ -15,7 +15,7 @@ const navItems = {
     ['failed-payments', 'Failed / expired'], ['health', 'System health'],
   ],
   merchant: [
-    ['overview', 'Overview'], ['customers', 'Customers'], ['orders', 'Orders'], ['payments', 'Payments'],
+    ['overview', 'Overview'], ['api-usage', 'API usage'], ['customers', 'Customers'], ['orders', 'Orders'], ['payments', 'Payments'],
     ['payment-links', 'Payment links'], ['credit-accounts', 'Credit balances'], ['topups', 'Credit top-ups'],
     ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhook-endpoints', 'Webhook endpoints'],
     ['webhook-deliveries', 'Delivery history'],
@@ -108,6 +108,32 @@ function stat(label, value, foot = '') {
   return `<article class="stat-card"><div class="stat-label"><span>${esc(label)}</span><span class="nav-mark">/</span></div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></article>`;
 }
 
+async function renderMerchantApiUsage(container) {
+  const response = await api('/v1/usage');
+  const usage = response.usage ?? {};
+  const categories = [
+    ['general', 'General API', 'All merchant API requests'],
+    ['ai', 'AI requests', '/v1/ai endpoints'],
+    ['sms', 'SMS requests', '/v1/sms endpoints'],
+  ];
+  container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Merchant data</div><h1>API usage</h1><p>Your request limits for the current window. Only your own usage is shown.</p></div><button class="button" data-refresh-usage>Refresh</button></div>
+    <div class="stats-grid">${categories.map(([key, label, note]) => {
+      const entry = usage[key] ?? {};
+      const used = Number(entry.used ?? 0);
+      const unlimited = entry.unlimited === true;
+      const limit = unlimited ? null : (entry.limit ?? null);
+      const remaining = unlimited ? null : Number(entry.remaining ?? 0);
+      const percent = (!unlimited && limit) ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+      const value = unlimited ? `${used} / Unlimited` : `${used} / ${limit}`;
+      const foot = unlimited ? 'Unlimited requests' : `${remaining} remaining`;
+      return `<article class="stat-card"><div class="stat-label"><span>${esc(label)}</span><span class="nav-mark">/</span></div>
+        <div class="stat-value">${esc(value)}</div>
+        <div class="usage-track" role="progressbar" aria-valuemin="0" aria-valuemax="${limit ?? 0}" aria-valuenow="${used}" aria-label="${esc(label)} usage"><span class="usage-fill${percent >= 100 ? ' full' : ''}" style="width:${percent}%"></span></div>
+        <div class="stat-foot">${esc(foot)} · resets ${esc(formatDate(entry.windowResetAt))}<br>${esc(note)}</div></article>`;
+    }).join('')}</div>`;
+  container.querySelector('[data-refresh-usage]').addEventListener('click', () => openPage('api-usage'));
+}
+
 function setTheme(theme) {
   document.body.dataset.theme = theme;
   localStorage.setItem('tariffia-theme', theme);
@@ -167,6 +193,7 @@ function renderShell() {
 
 function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
+    id === 'api-usage' ? 'API usage' :
     (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));
   document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
@@ -183,6 +210,7 @@ async function openPage(id) {
   try {
     if (id === 'overview') await renderOverview(container);
     else if (id === 'health') await renderHealth(container);
+    else if (role === 'merchant' && id === 'api-usage') await renderMerchantApiUsage(container);
     else if (role === 'merchant' && id === 'ai-models') await renderMerchantModels(container);
     else await renderCollectionPage(container, id, title);
   } catch (error) {
