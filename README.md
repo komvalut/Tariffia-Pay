@@ -153,6 +153,7 @@ Endpoint management and logs are available at `GET/POST /v1/webhooks`, `PATCH/DE
 
 - The admin credential and API-key pepper are server-only environment secrets.
 - Merchant API keys are shown once and stored only as HMAC-SHA256 hashes.
+- Merchants manage their own keys in self-service: `GET /v1/api-keys` lists their keys (active and revoked, with status and last-used time) without ever returning a secret or hash, `POST /v1/api-keys` returns the full secret exactly once, and `DELETE /v1/api-keys/:keyId` revokes a key immediately. A merchant can never see or revoke another merchant's key. The merchant dashboard has an **API keys** page for the same list/create/revoke flow with a one-time secret display.
 - Tariffia does not hold or sign with customer or merchant private keys.
 - USDC payments and internal `CREDITS` balances use different records and currency labels; credits cannot be withdrawn or cashed out.
 - The frontend never determines payment status. Only the configured chain adapter can confirm a payment after independent server-side verification.

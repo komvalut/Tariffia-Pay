@@ -15,7 +15,7 @@ const navItems = {
     ['failed-payments', 'Failed / expired'], ['health', 'System health'],
   ],
   merchant: [
-    ['overview', 'Overview'], ['api-usage', 'API usage'], ['customers', 'Customers'], ['orders', 'Orders'], ['payments', 'Payments'],
+    ['overview', 'Overview'], ['api-usage', 'API usage'], ['api-keys', 'API keys'], ['customers', 'Customers'], ['orders', 'Orders'], ['payments', 'Payments'],
     ['payment-links', 'Payment links'], ['credit-accounts', 'Credit balances'], ['topups', 'Credit top-ups'],
     ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhook-endpoints', 'Webhook endpoints'],
     ['webhook-deliveries', 'Delivery history'],
@@ -134,6 +134,52 @@ async function renderMerchantApiUsage(container) {
   container.querySelector('[data-refresh-usage]').addEventListener('click', () => openPage('api-usage'));
 }
 
+async function renderMerchantApiKeys(container) {
+  const response = await api('/v1/api-keys');
+  const keys = response.apiKeys ?? [];
+  const rows = keys.map((key) => `<tr>
+      <td>${esc(key.name)}</td>
+      <td>${esc(key.status === 'active' ? 'Active' : 'Revoked')}</td>
+      <td><span class="mono">${esc(key.prefix)}…</span></td>
+      <td>${esc(formatDate(key.createdAt))}</td>
+      <td>${esc(key.lastUsedAt ? formatDate(key.lastUsedAt) : 'Never')}</td>
+      <td>${key.status === 'active' ? `<button class="button small danger" data-revoke-key="${esc(key.id)}">Revoke</button>` : '—'}</td>
+    </tr>`).join('');
+  container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Merchant data</div><h1>API keys</h1><p>Keys for your account only. The full secret is shown once at creation and never again.</p></div><button class="button" data-refresh-keys>Refresh</button></div>
+    <section class="panel form-panel"><div class="panel-head"><div><h2>Create an API key</h2><p>Give the key a name so you can recognise it later.</p></div></div>
+      <form data-form="api-key" class="form-grid"><label class="field span-2"><span>Key name</span><input name="name" maxlength="80" required></label><div class="form-actions"><button class="button primary">Create key</button><span class="notice" data-notice></span></div></form></section>
+    <section class="panel"><div class="panel-head"><div><h2>Your keys</h2><p>Revoking a key invalidates it immediately.</p></div></div>
+      ${keys.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th>Prefix</th><th>Created</th><th>Last used</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state">No API keys yet.</div>'}</section>`;
+
+  container.querySelector('[data-refresh-keys]').addEventListener('click', () => openPage('api-keys'));
+  container.querySelectorAll('[data-revoke-key]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Revoke this API key? Requests using it will stop working immediately.')) return;
+    button.disabled = true;
+    try {
+      await api(`/v1/api-keys/${encodeURIComponent(button.dataset.revokeKey)}`, { method: 'DELETE' });
+      notify('API key revoked.');
+      await openPage('api-keys');
+    } catch (error) { notify(error.message); button.disabled = false; }
+  }));
+  container.querySelector('form[data-form="api-key"]')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    const notice = form.querySelector('[data-notice]');
+    const name = new FormData(form).get('name');
+    button.disabled = true; notice.className = 'notice'; notice.textContent = 'Creating…';
+    try {
+      const created = await api('/v1/api-keys', { method: 'POST', body: JSON.stringify({ name }) });
+      form.reset();
+      showModal('API key created', `<p>Store this secret now. It is shown only once and only its hash is stored.</p><pre class="mono" data-revealed-secret>${esc(created.secret)}</pre><p class="notice">${esc(created.warning ?? '')}</p>`, 'API key');
+      notify('API key created. Copy the secret now.');
+      await openPage('api-keys');
+    } catch (error) {
+      notice.className = 'notice error'; notice.textContent = error.message; button.disabled = false;
+    }
+  });
+}
+
 function setTheme(theme) {
   document.body.dataset.theme = theme;
   localStorage.setItem('tariffia-theme', theme);
@@ -193,7 +239,7 @@ function renderShell() {
 
 function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
-    id === 'api-usage' ? 'API usage' :
+    id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' :
     (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));
   document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
@@ -211,6 +257,7 @@ async function openPage(id) {
     if (id === 'overview') await renderOverview(container);
     else if (id === 'health') await renderHealth(container);
     else if (role === 'merchant' && id === 'api-usage') await renderMerchantApiUsage(container);
+    else if (role === 'merchant' && id === 'api-keys') await renderMerchantApiKeys(container);
     else if (role === 'merchant' && id === 'ai-models') await renderMerchantModels(container);
     else await renderCollectionPage(container, id, title);
   } catch (error) {
@@ -482,14 +529,14 @@ async function showAttempts(deliveryId, endpointId) {
     const result = await api(path);
     const attempts = result.attempts ?? [];
     const html = attempts.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>HTTP</th><th>Started</th><th>Finished</th><th>Error</th></tr></thead><tbody>${attempts.map((item) => `<tr><td>${esc(item.attemptNumber)}</td><td>${esc(item.httpStatus ?? '—')}</td><td>${esc(formatDate(item.startedAt))}</td><td>${esc(formatDate(item.finishedAt))}</td><td>${esc(item.error ?? '—')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-state">No attempts recorded.</div>';
-    showModal('Delivery attempts', html);
+    showModal('Delivery attempts', html, 'Webhook delivery');
   } catch (error) { notify(error.message); }
 }
 
-function showModal(title, content) {
+function showModal(title, content, eyebrow = 'Details') {
   document.querySelector('.modal-backdrop')?.remove();
   const backdrop = document.createElement('div'); backdrop.className = 'modal-backdrop';
-  backdrop.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><button class="button small modal-close" type="button">Close</button><div class="panel-head"><div><div class="eyebrow">Webhook delivery</div><h2>${esc(title)}</h2></div></div>${content}</section>`;
+  backdrop.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><button class="button small modal-close" type="button">Close</button><div class="panel-head"><div><div class="eyebrow">${esc(eyebrow)}</div><h2>${esc(title)}</h2></div></div>${content}</section>`;
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop || event.target.closest('.modal-close')) backdrop.remove(); });
   document.body.append(backdrop);
 }
