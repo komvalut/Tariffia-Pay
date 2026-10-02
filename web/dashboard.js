@@ -311,20 +311,43 @@ async function renderMerchantTransactions(container) {
     container.querySelectorAll('[data-transaction-detail]').forEach((button) => button.addEventListener('click', async () => {
       button.disabled = true;
       try {
-        const result = await api(`/v1/transactions/${encodeURIComponent(button.dataset.transactionDetail)}`);
+        const paymentId = button.dataset.transactionDetail;
+        const [result, details] = await Promise.all([
+          api(`/v1/transactions/${encodeURIComponent(paymentId)}`),
+          api(`/v1/payments/${encodeURIComponent(paymentId)}/details`).catch(() => null),
+        ]);
         const transaction = result.transaction ?? {};
+        const payment = details?.payment ?? {};
+        const order = details?.order ?? {};
+        const invoice = details?.invoice ?? null;
+        const receipt = details?.receipt ?? invoice?.receipt ?? null;
         const fields = [
           ['Transaction ID', transaction.transactionId ?? '—'], ['Payment ID', transaction.paymentId],
-          ['Order ID', transaction.orderId], ['Description', transaction.description ?? '—'],
-          ['Amount', formatMoney(transaction.amount, transaction.currency ?? 'USDC')],
-          ['Status', transaction.status], ['Network', transaction.network ?? '—'],
-          ['Adapter', transaction.adapter ?? '—'],
-          ['Detected', transaction.detectedAt ? formatDate(transaction.detectedAt) : '—'],
-          ['Confirmed', transaction.confirmedAt ? formatDate(transaction.confirmedAt) : '—'],
-          ['Expires', transaction.expiresAt ? formatDate(transaction.expiresAt) : '—'],
-          ['Created', formatDate(transaction.createdAt)],
+          ['Order ID', order.id ?? transaction.orderId], ['Description', order.description ?? transaction.description ?? '—'],
+          ['Amount', formatMoney(payment.amount ?? transaction.amount, payment.currency ?? transaction.currency ?? 'USDC')],
+          ['Status', payment.status ?? transaction.status], ['Payment method', payment.paymentMethod?.name ?? transaction.adapter ?? '—'],
+          ['Network', payment.network ?? transaction.network ?? '—'],
+          ['Order status', order.status ?? '—'], ['Order reference', order.reference ?? '—'],
+          ['Invoice number', invoice?.invoiceNumber ?? 'Not issued'],
+          ['Detected', payment.detectedAt ? formatDate(payment.detectedAt) : '—'],
+          ['Confirmed', payment.confirmedAt ? formatDate(payment.confirmedAt) : '—'],
+          ['Created', formatDate(payment.createdAt ?? transaction.createdAt)],
         ];
-        showModal('Transaction details', `<div class="table-wrap"><table><tbody>${fields.map(([label, value]) => `<tr><th>${esc(label)}</th><td>${esc(value ?? '—')}</td></tr>`).join('')}</tbody></table></div>`, 'Transaction');
+        const links = [];
+        if (receipt?.publicId) links.push(`<a class="inline-link" href="/r/${encodeURIComponent(receipt.publicId)}" target="_blank" rel="noreferrer">Open receipt</a>`);
+        if (invoice?.invoiceNumber) links.push(`<button class="button small" data-invoice-pdf="${esc(invoice.invoiceNumber)}">Download invoice PDF</button>`);
+        const body = `<div class="table-wrap"><table><tbody>${fields.map(([label, value]) => `<tr><th>${esc(label)}</th><td>${esc(value ?? '—')}</td></tr>`).join('')}</tbody></table></div>${links.length ? `<div class="form-actions">${links.join(' ')}</div>` : ''}`;
+        showModal('Transaction details', body, 'Transaction');
+        document.querySelector('.modal-backdrop [data-invoice-pdf]')?.addEventListener('click', async (event) => {
+          const target = event.currentTarget;
+          target.disabled = true;
+          try {
+            const response = await fetch(`/v1/invoices/${encodeURIComponent(target.dataset.invoicePdf)}.pdf`, { cache: 'no-store', headers: authHeaders() });
+            if (!response.ok) throw new Error('Invoice download failed');
+            const blob = await response.blob();
+            window.open(URL.createObjectURL(blob), '_blank');
+          } catch (error) { notify(error.message); } finally { target.disabled = false; }
+        });
       } catch (error) { notify(error.message); } finally { button.disabled = false; }
     }));
   };

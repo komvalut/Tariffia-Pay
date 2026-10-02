@@ -169,7 +169,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   await app.register(customerRoutes, { db });
   await app.register(orderRoutes, { db, paymentCore });
   await app.register(paymentLinkRoutes, { db, paymentCore });
-  await app.register(paymentRoutes, { db, verification: paymentVerification });
+  await app.register(paymentRoutes, { db, verification: paymentVerification, adapters });
   await app.register(transactionRoutes, { db });
   await app.register(checkoutRoutes, { db, verification: paymentVerification, adapters });
   await app.register(billingDocumentRoutes, { db, adapters });

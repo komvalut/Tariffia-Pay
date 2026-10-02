@@ -169,7 +169,16 @@ async function getMerchantReceipt(db: Database, merchantId: string, receiptId: s
   return result.rows[0];
 }
 
-function merchantInvoiceView(row: BillingDocumentRow, adapters: PaymentAdapterRegistry) {
+/** The invoice (with its receipt) issued for one payment, scoped to the owning merchant. */
+export async function getPaymentInvoice(db: Database, merchantId: string, paymentId: string): Promise<BillingDocumentRow | undefined> {
+  const result = await db.query<BillingDocumentRow>(
+    `${invoiceSelect} WHERE i.merchant_id = $1 AND i.payment_id = $2 LIMIT 1`,
+    [merchantId, paymentId],
+  );
+  return result.rows[0];
+}
+
+export function merchantInvoiceView(row: BillingDocumentRow, adapters: PaymentAdapterRegistry) {
   return {
     id: row.id,
     invoiceNumber: row.invoice_number,
