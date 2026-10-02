@@ -65,6 +65,7 @@ Other merchant endpoints:
 - `GET /v1/payments/:paymentId`, `GET /v1/payments/:paymentId/details`
 - `GET /v1/transactions`, `GET /v1/transactions/:paymentId`
 - `GET /v1/revenue/summary`, `GET /v1/revenue/history`
+- `GET /v1/settings`, `PUT /v1/settings`
 - `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
 - `POST /v1/payment-links`, `GET /v1/payment-links`, `GET /v1/payment-links/:paymentId`, `PATCH /v1/payment-links/:paymentId`, `DELETE /v1/payment-links/:paymentId`
 - `GET /v1/customers`, `GET /v1/customers/:customerId`
@@ -106,6 +107,8 @@ Payment details are available through `GET /v1/payments/:paymentId/details`, whi
 A read-only revenue summary is available through `GET /v1/revenue/summary`, with optional `from`/`to` ISO date filters (applied to payment creation time). It returns `totalConfirmed` (sum of confirmed payments, `currency` is the single confirmed currency or `MIXED`, with a `totalsByCurrency` breakdown) and the `confirmedPaymentCount`, `pendingPaymentCount`, `failedPaymentCount` and `expiredPaymentCount` status buckets. It reads existing payment records only, never mutates them, and is scoped to the authenticated merchant. The merchant dashboard Overview shows a **Revenue** section with confirmed revenue and the payment status counts.
 
 Daily confirmed revenue is available through `GET /v1/revenue/history` with optional `from`/`to` ISO date filters (applied to the confirmation time) and a `currency` filter. It uses only `CONFIRMED` payments and returns one entry per UTC day — and per currency when a merchant settles in more than one — with `date`, `currency`, `confirmedAmount` and `confirmedPaymentCount`, oldest first. It is read-only, scoped to the authenticated merchant, and the Overview shows a daily revenue history table beneath the Revenue section.
+
+Merchant self-service settings are available through `GET /v1/settings` and `PUT /v1/settings`, limited to four non-sensitive preferences: display name, support email, default currency and timezone. Display name and support email fall back to the merchant account name/email when unset; default currency and timezone fall back to `USDC` and `UTC`. The request schema is strict, so API keys, wallet addresses, webhook secrets, provider credentials, private keys and status are rejected (400) and never returned. Settings are scoped to the authenticated merchant and stored separately from the merchant account record. The merchant dashboard has a **Settings** page with a simple form and Save button.
 
 Production startup requires explicit database, admin, API-key pepper, public URL, and webhook encryption configuration. Admin and pepper secrets must be distinct random values of at least 32 characters; `PUBLIC_BASE_URL` and `BASE_RPC_URL` must use HTTPS. Configure `TRUST_PROXY` only with the IPs/CIDRs of trusted reverse proxies; forwarded client addresses are not trusted by default. API requests are rate-limited per client address, and responses include basic content-type, framing, referrer, permissions, and CSP protections. Production webhook delivery pins the validated DNS answer to the outbound connection to prevent DNS-rebinding SSRF.
 

@@ -19,7 +19,7 @@ const navItems = {
     ['transactions', 'Transactions'],
     ['payment-links', 'Payment links'], ['credit-accounts', 'Credit balances'], ['topups', 'Credit top-ups'],
     ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhooks', 'Webhooks'],
-    ['webhook-endpoints', 'Webhook settings'], ['webhook-deliveries', 'Delivery history'],
+    ['webhook-endpoints', 'Webhook settings'], ['webhook-deliveries', 'Delivery history'], ['settings', 'Settings'],
   ],
 };
 
@@ -354,6 +354,43 @@ async function renderMerchantTransactions(container) {
   await render();
 }
 
+async function renderMerchantSettings(container) {
+  const response = await api('/v1/settings');
+  const settings = response.settings ?? {};
+  container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Merchant data</div><h1>Settings</h1><p>Non-sensitive business preferences for your account. API keys, secrets and payment configuration are never edited here.</p></div></div>
+    <section class="panel form-panel"><div class="panel-head"><div><h2>Business settings</h2><p>Display name, support email, default currency and timezone.</p></div></div>
+      <form data-form="settings" class="form-grid">
+        <label class="field"><span>Display name</span><input name="displayName" maxlength="120" value="${esc(settings.displayName ?? '')}" required></label>
+        <label class="field"><span>Support email</span><input name="supportEmail" type="email" maxlength="254" value="${esc(settings.supportEmail ?? '')}" placeholder="support@example.com"></label>
+        <label class="field"><span>Default currency</span><input name="defaultCurrency" maxlength="12" value="${esc(settings.defaultCurrency ?? 'USDC')}" placeholder="USDC"></label>
+        <label class="field"><span>Timezone</span><input name="timezone" maxlength="64" value="${esc(settings.timezone ?? 'UTC')}" placeholder="UTC"></label>
+        <div class="form-actions"><button class="button primary">Save settings</button><span class="notice" data-notice></span></div>
+      </form></section>`;
+  container.querySelector('form[data-form="settings"]').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    const notice = form.querySelector('[data-notice]');
+    const values = Object.fromEntries(new FormData(form).entries());
+    button.disabled = true; notice.className = 'notice'; notice.textContent = 'Saving…';
+    try {
+      await api('/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          displayName: values.displayName?.trim() || null,
+          supportEmail: values.supportEmail?.trim() || null,
+          defaultCurrency: values.defaultCurrency?.trim() || null,
+          timezone: values.timezone?.trim() || null,
+        }),
+      });
+      notice.className = 'notice success'; notice.textContent = 'Settings saved.';
+      notify('Settings saved.');
+    } catch (error) {
+      notice.className = 'notice error'; notice.textContent = error.message;
+    } finally { button.disabled = false; }
+  });
+}
+
 function setTheme(theme) {
   document.body.dataset.theme = theme;
   localStorage.setItem('tariffia-theme', theme);
@@ -414,9 +451,8 @@ function renderShell() {
 function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
     id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' : id === 'webhooks' ? 'Webhooks' :
-    id === 'transactions' ? 'Transactions' :
-    (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));
-  document.querySelector('#crumb-current').textContent = title;
+    id === 'transactions' ? 'Transactions' : id === 'settings' ? 'Settings' :
+    (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));  document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
   return title;
 }
@@ -435,6 +471,7 @@ async function openPage(id) {
     else if (role === 'merchant' && id === 'api-keys') await renderMerchantApiKeys(container);
     else if (role === 'merchant' && id === 'webhooks') await renderMerchantWebhooks(container);
     else if (role === 'merchant' && id === 'transactions') await renderMerchantTransactions(container);
+    else if (role === 'merchant' && id === 'settings') await renderMerchantSettings(container);
     else if (role === 'merchant' && id === 'ai-models') await renderMerchantModels(container);
     else await renderCollectionPage(container, id, title);
   } catch (error) {

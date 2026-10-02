@@ -309,3 +309,21 @@ export const updateMerchantUsageLimitsSchema = z.object({
 export const updatePaymentLinkSchema = z.object({
   enabled: z.boolean(),
 }).strict();
+
+const timezoneName = z.string().trim().min(1).max(64).refine((value) => {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Must be a valid IANA timezone');
+
+// Only non-sensitive merchant preferences. `.strict()` rejects any other field, including
+// sensitive ones such as API keys, wallet addresses, secrets or status.
+export const updateMerchantSettingsSchema = z.object({
+  displayName: z.string().trim().min(1).max(120).nullable().default(null),
+  supportEmail: z.string().trim().email().max(254).nullable().default(null),
+  defaultCurrency: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9]{2,11}$/).nullable().default(null),
+  timezone: timezoneName.nullable().default(null),
+}).strict();
