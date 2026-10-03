@@ -142,6 +142,34 @@ const aiUsageSchema = {
   },
 };
 
+const auditEntrySchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    actorType: { type: 'string', enum: ['merchant', 'admin'] },
+    actorId: { type: 'string', description: 'Identifier of the acting merchant or admin.' },
+    action: { type: 'string', example: 'settings.update' },
+    resourceType: { type: 'string', example: 'settings' },
+    resourceId: { type: 'string', nullable: true },
+    metadata: {
+      type: 'object',
+      additionalProperties: true,
+      description: 'Bounded, non-sensitive metadata (for example changed field names). Secrets, credentials, OTP codes and message content are never recorded.',
+    },
+    createdAt: { type: 'string', format: 'date-time' },
+  },
+};
+
+const paginationSchema = {
+  type: 'object',
+  properties: {
+    limit: { type: 'integer' },
+    offset: { type: 'integer' },
+    count: { type: 'integer' },
+    hasMore: { type: 'boolean' },
+  },
+};
+
 export const openApiDocument = {
   openapi: '3.0.3',
   info: {
@@ -152,9 +180,11 @@ export const openApiDocument = {
       'credit engine, an AI reseller gateway, an SMS/OTP service and merchant self-service tools.',
       '',
       'Authentication: every merchant endpoint uses a merchant API key sent as',
-      '`Authorization: Bearer <key>`. Public checkout, receipt and health endpoints need no',
-      'authentication. This description covers existing public and merchant endpoints only; it',
-      'never exposes or accepts secrets, private keys or provider credentials.',
+      '`Authorization: Bearer <key>`. The admin-only operational health summary uses the',
+      '`x-admin-api-key` header; public checkout, receipt and health probes need no authentication.',
+      'Apart from that single admin health endpoint, admin routes are intentionally not documented.',
+      'This description covers existing public and merchant endpoints only; it never exposes or',
+      'accepts secrets, private keys or provider credentials.',
     ].join('\n'),
   },
   servers: [{ url: '/', description: 'This Tariffia Pay instance' }],
@@ -174,9 +204,11 @@ export const openApiDocument = {
     { name: 'Settings', description: 'Non-sensitive merchant settings.' },
     { name: 'Notifications', description: 'Merchant notification event preferences.' },
     { name: 'Usage', description: 'Per-merchant request usage and limits.' },
+    { name: 'Audit log', description: 'Append-only record of important merchant actions.' },
     { name: 'API keys', description: 'Merchant self-service API keys.' },
     { name: 'Billing documents', description: 'Invoices and receipts for confirmed payments.' },
     { name: 'Ledger', description: 'Append-only merchant ledger entries.' },
+    { name: 'Merchant dashboard', description: 'Read-only data views used by the merchant dashboard.' },
     { name: 'Public checkout', description: 'Public hosted checkout and QR.' },
     { name: 'Public receipts', description: 'Public receipt access for customers.' },
   ],
@@ -197,6 +229,19 @@ export const openApiDocument = {
       get: {
         tags: ['Health'], security: [], summary: 'Readiness probe',
         responses: { 200: { description: 'Ready.' }, 503: { description: 'Not ready.' } },
+      },
+    },
+    '/v1/health': {
+      get: {
+        tags: ['Health'], security: [{ adminApiKey: [] }], summary: 'Operational health summary (admin only)',
+        description: 'Admin-only operational summary. Reports only safe operational data; secrets, credentials, provider URLs and keys are never returned.',
+        responses: {
+          200: {
+            description: 'Operational summary.',
+            content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } },
+          },
+          ...commonErrorResponses,
+        },
       },
     },
     '/v1/orders': {
@@ -731,6 +776,54 @@ export const openApiDocument = {
         responses: { 204: { description: 'Revoked.' }, ...commonErrorResponses },
       },
     },
+    '/v1/audit-log': {
+      get: {
+        tags: ['Audit log'], security: merchantSecurity, summary: 'List your append-only audit log (newest first)',
+        description: 'Merchant-scoped, append-only history of important account actions. Only safe metadata is stored; API keys, secrets, OTP codes and message content are never recorded.',
+        parameters: [
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+        ],
+        responses: {
+          200: {
+            description: 'Audit entries for the authenticated merchant, newest first.',
+            content: { 'application/json': { schema: { type: 'object', properties: { entries: { type: 'array', items: { $ref: '#/components/schemas/AuditEntry' } }, pagination: { $ref: '#/components/schemas/Pagination' } } } } },
+          },
+          ...commonErrorResponses,
+        },
+      },
+    },
+    '/v1/dashboard/overview': {
+      get: {
+        tags: ['Merchant dashboard'], security: merchantSecurity, summary: 'Merchant dashboard overview counters',
+        responses: {
+          200: {
+            description: 'Aggregated counters for the authenticated merchant.',
+            content: { 'application/json': { schema: { type: 'object', properties: { overview: { type: 'object', additionalProperties: true } } } } },
+          },
+          ...commonErrorResponses,
+        },
+      },
+    },
+    '/v1/dashboard/{collection}': {
+      get: {
+        tags: ['Merchant dashboard'], security: merchantSecurity, summary: 'Read a merchant dashboard collection',
+        parameters: [
+          { name: 'collection', in: 'path', required: true, schema: { type: 'string', enum: ['customers', 'orders', 'payments', 'payment-links', 'credit-accounts', 'credit-transactions', 'topups', 'usage', 'webhook-endpoints', 'webhook-deliveries'] } },
+          { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
+          { name: 'q', in: 'query', schema: { type: 'string', maxLength: 120 } },
+          { name: 'status', in: 'query', schema: { type: 'string', maxLength: 32 } },
+        ],
+        responses: {
+          200: {
+            description: 'Paginated collection rows for the authenticated merchant.',
+            content: { 'application/json': { schema: { type: 'object', properties: { items: { type: 'array', items: { type: 'object', additionalProperties: true } }, page: { type: 'integer' }, limit: { type: 'integer' }, hasMore: { type: 'boolean' } } } } },
+          },
+          ...commonErrorResponses,
+        },
+      },
+    },
     '/v1/invoices': {
       get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'List invoices for confirmed payments', responses: { 200: { description: 'Invoices.' }, ...commonErrorResponses } },
     },
@@ -793,6 +886,12 @@ export const openApiDocument = {
         scheme: 'bearer',
         description: 'Merchant API key sent as `Authorization: Bearer <key>`. Keys are created once via the merchant API or admin provisioning and stored only as hashes.',
       },
+      adminApiKey: {
+        type: 'apiKey',
+        in: 'header',
+        name: 'x-admin-api-key',
+        description: 'Server-side administrator credential for operational endpoints. Never embedded in responses and never shown as an example value.',
+      },
     },
     schemas: {
       Error: errorSchema,
@@ -802,6 +901,8 @@ export const openApiDocument = {
       Customer: customerSchema,
       PaymentLink: paymentLinkSchema,
       AiUsage: aiUsageSchema,
+      AuditEntry: auditEntrySchema,
+      Pagination: paginationSchema,
       UsageCategory: {
         type: 'object',
         properties: {

@@ -6,6 +6,42 @@ import type { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from '../src/db.js';
 import { buildApp } from '../src/app.js';
+import { openApiDocument } from '../src/openapi.js';
+
+type ImplementedRoute = { method: string; serverPath: string; path: string };
+
+// Parses the Fastify route tree (`:param` style) into method + templated paths so the test can
+// compare implemented merchant routes against the OpenAPI document without a static list.
+function parseImplementedRoutes(output: string): ImplementedRoute[] {
+  const routes: ImplementedRoute[] = [];
+  const stack: string[] = [];
+  for (const raw of output.split('\n')) {
+    const branch = raw.includes('├── ') ? '├── ' : raw.includes('└── ') ? '└── ' : null;
+    if (!branch) continue;
+    const index = raw.indexOf(branch);
+    if (index % 4 !== 0) continue;
+    const depth = index / 4;
+    const rest = raw.slice(index + branch.length).trim();
+    const withMethods = /^(.*)\s+\(([^)]*)\)$/.exec(rest);
+    const segment = (withMethods ? withMethods[1]! : rest).trim();
+    const methods = (withMethods?.[2] ?? '').split(',').map((method) => method.trim()).filter(Boolean);
+    const serverPath = `${depth > 0 ? stack[depth - 1] ?? '' : ''}${segment}`;
+    stack[depth] = serverPath;
+    stack.length = depth + 1;
+    for (const method of methods) {
+      if (method === 'HEAD' || method === 'OPTIONS') continue;
+      routes.push({ method, serverPath, path: serverPath.replace(/:([A-Za-z0-9_]+)/g, '{$1}') });
+    }
+  }
+  return routes;
+}
+
+function isMerchantRoute(route: ImplementedRoute): boolean {
+  return route.serverPath.startsWith('/v1/')
+    && !route.serverPath.startsWith('/v1/admin/')
+    && !route.serverPath.startsWith('/v1/public/')
+    && route.serverPath !== '/v1/health';
+}
 
 function pgAdapterPool(memory: ReturnType<typeof newDb>): Pool {
   const adapter = memory.adapters.createPg();
@@ -36,7 +72,7 @@ async function createDatabase(): Promise<Database> {
   for (const migration of ['0004_credit_engine.sql', '0005_ai_pricing.sql', '0006_invoices_receipts.sql',
     '0007_subscriptions.sql', '0008_ai_provider_integration.sql', '0009_sms_otp.sql',
     '0010_sms_provider_hardening.sql', '0011_merchant_usage_limits.sql', '0012_payment_links.sql',
-    '0013_merchant_settings.sql', '0014_notification_preferences.sql']) {
+    '0013_merchant_settings.sql', '0014_notification_preferences.sql', '0015_audit_log.sql']) {
     await pool.query(await readFile(path.join(migrationsDir, migration), 'utf8'));
   }
   return {
@@ -113,6 +149,8 @@ describe('OpenAPI documentation', () => {
       'GET /v1/settings', 'PUT /v1/settings',
       'GET /v1/notification-preferences', 'PUT /v1/notification-preferences',
       'GET /v1/usage',
+      'GET /v1/audit-log', 'GET /v1/health',
+      'GET /v1/dashboard/overview', 'GET /v1/dashboard/{collection}',
       'GET /v1/api-keys', 'POST /v1/api-keys', 'DELETE /v1/api-keys/{keyId}',
       'GET /v1/invoices', 'GET /v1/receipts', 'GET /v1/ledger',
       'GET /v1/public/payment-methods', 'GET /v1/public/payments/{paymentId}',
@@ -141,5 +179,45 @@ describe('OpenAPI documentation', () => {
     // The documented webhook secret field is a schema property, never a value.
     expect(body).toContain('"secret"');
     expect(body).not.toMatch(/"secret":\s*"[^"]+"/);
+    // The admin security scheme is declared by header name only, never with an example value.
+    expect(openApiDocument.components.securitySchemes.adminApiKey).toMatchObject({
+      type: 'apiKey', in: 'header', name: 'x-admin-api-key',
+    });
+    expect(openApiDocument.components.securitySchemes.adminApiKey).not.toHaveProperty('example');
+  });
+
+  it('documents the audit-log and admin health endpoints with correct authentication', () => {
+    const audit = openApiDocument.paths['/v1/audit-log'];
+    expect(audit, 'GET /v1/audit-log is not documented').toBeDefined();
+    expect(audit.get, 'GET /v1/audit-log operation is not documented').toBeDefined();
+    expect(audit.get.security).toEqual([{ merchantApiKey: [] }]);
+    expect(audit.get.parameters?.map((parameter) => parameter.name)).toEqual(expect.arrayContaining(['limit', 'offset']));
+    expect(JSON.stringify(audit)).toContain('AuditEntry');
+
+    const health = openApiDocument.paths['/v1/health'];
+    expect(health, 'GET /v1/health is not documented').toBeDefined();
+    expect(health.get, 'GET /v1/health operation is not documented').toBeDefined();
+    expect(health.get.security).toEqual([{ adminApiKey: [] }]);
+  });
+
+  it('documents every implemented merchant /v1 route', () => {
+    const routes = parseImplementedRoutes(app.printRoutes({ commonPrefix: false }));
+    expect(routes.length).toBeGreaterThan(40);
+    const merchantRoutes = routes.filter(isMerchantRoute);
+    expect(merchantRoutes.length).toBeGreaterThan(40);
+
+    const missing: string[] = [];
+    for (const route of merchantRoutes) {
+      const operations = (openApiDocument.paths as unknown as Record<string, Record<string, { security?: unknown }>>)[route.path];
+      const operation = operations?.[route.method.toLowerCase()];
+      if (!operation) {
+        missing.push(`${route.method} ${route.path}`);
+        continue;
+      }
+      // Every documented merchant operation must declare the merchant bearer scheme.
+      expect(operation.security, `${route.method} ${route.path} must require the merchant API key`)
+        .toEqual([{ merchantApiKey: [] }]);
+    }
+    expect(missing, `Merchant routes missing from OpenAPI: ${missing.join(', ')}`).toEqual([]);
   });
 });
