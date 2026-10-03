@@ -2,13 +2,10 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { parseBody, requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { createOrderSchema } from '../schemas.js';
 import { orderStatusLabel, orderStatuses, paymentStatusLabel } from '../payment-status.js';
 import type { PaymentCoreService } from '../services/payment-core-service.js';
-
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
-}
 
 function orderView(row: Record<string, unknown>) {
   return {
@@ -28,6 +25,7 @@ export const orderRoutes: FastifyPluginAsync<{ db: Database; paymentCore: Paymen
     if (status && !orderStatuses.includes(status as (typeof orderStatuses)[number])) {
       throw new HttpError(400, 'Unknown order status filter', 'invalid_order_status');
     }
+    const { limit, offset } = parsePagination(query);
     const result = await db.query(
       `SELECT o.id, o.customer_id AS "customerId", o.reference, o.description, o.amount::text AS amount,
               o.currency, o.status, o.created_at AS "createdAt", o.updated_at AS "updatedAt",
@@ -35,10 +33,11 @@ export const orderRoutes: FastifyPluginAsync<{ db: Database; paymentCore: Paymen
               p.detected_at AS "detectedAt", p.confirmed_at AS "confirmedAt", p.expires_at AS "expiresAt"
          FROM orders o LEFT JOIN payments p ON p.order_id = o.id
         WHERE o.merchant_id = $1 AND ($2::text IS NULL OR o.status = $2)
-        ORDER BY o.created_at DESC, o.id DESC LIMIT $3`,
-      [merchant.id, status, pageLimit(query.limit)],
+        ORDER BY o.created_at DESC, o.id DESC LIMIT $3 OFFSET $4`,
+      [merchant.id, status, limit + 1, offset],
     );
-    return reply.send({ orders: result.rows.map(orderView) });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ orders: page.items.map(orderView), pagination: page.pagination });
   });
 
   app.get('/v1/orders/:orderId', async (request, reply) => {

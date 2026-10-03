@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { parseBody, requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { createWebhookSchema, updateWebhookSchema } from '../schemas.js';
 import { newId } from '../security.js';
 import { encryptWebhookSecret } from '../webhooks/secret-crypto.js';
@@ -9,19 +10,19 @@ import { validateWebhookUrl } from '../webhooks/url.js';
 import { sanitizeStoredWebhookError } from '../webhooks/error-safety.js';
 import type { AuditLogService } from '../services/audit-log-service.js';
 
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
-}
-
 export const webhookRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLogService }> = async (app, { db, auditLog }) => {
   app.get('/v1/webhooks', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query(
       `SELECT id, name, url, events, enabled, created_at AS "createdAt", updated_at AS "updatedAt"
-         FROM webhook_endpoints WHERE merchant_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC`,
-      [merchant.id],
+         FROM webhook_endpoints WHERE merchant_id = $1 AND deleted_at IS NULL
+        ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [merchant.id, limit + 1, offset],
     );
-    return reply.send({ endpoints: result.rows });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ endpoints: page.items, pagination: page.pagination });
   });
 
   app.post('/v1/webhooks', async (request, reply) => {
@@ -121,25 +122,27 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLo
   app.get('/v1/webhooks/:endpointId/deliveries', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
     const { endpointId } = request.params as { endpointId: string };
-    const query = request.query as { limit?: string; before?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query(
       `SELECT d.id, d.event_id AS "eventId", e.event_type AS event, d.status, d.attempts,
               d.next_attempt_at AS "nextAttemptAt", d.last_http_status AS "lastHttpStatus",
               d.last_error AS "lastError", d.delivered_at AS "deliveredAt", d.created_at AS "createdAt"
          FROM webhook_deliveries d JOIN webhook_events e ON e.id = d.event_id
          JOIN webhook_endpoints ep ON ep.id = d.endpoint_id
-        WHERE ep.id = $1 AND ep.merchant_id = $2 AND ($3::timestamptz IS NULL OR d.created_at < $3)
-        ORDER BY d.created_at DESC, d.id DESC LIMIT $4`,
-      [endpointId, merchant.id, query.before ?? null, pageLimit(query.limit)],
+        WHERE ep.id = $1 AND ep.merchant_id = $2
+        ORDER BY d.created_at DESC, d.id DESC LIMIT $3 OFFSET $4`,
+      [endpointId, merchant.id, limit + 1, offset],
     );
-    return reply.send({ deliveries: result.rows.map((row) => {
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ deliveries: page.items.map((row) => {
       const { lastError, ...delivery } = row as Record<string, unknown>;
       return {
         ...delivery,
         lastError: sanitizeStoredWebhookError(typeof lastError === 'string' ? lastError : null,
           typeof delivery.lastHttpStatus === 'number' ? delivery.lastHttpStatus : null),
       };
-    }) });
+    }), pagination: page.pagination });
   });
 
   app.get('/v1/webhooks/:endpointId/deliveries/:deliveryId/attempts', async (request, reply) => {

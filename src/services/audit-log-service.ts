@@ -1,4 +1,5 @@
 import type { Database } from '../db.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { newId } from '../security.js';
 
 export type AuditActorType = 'admin' | 'merchant';
@@ -70,12 +71,6 @@ export function sanitizeAuditMetadata(metadata: AuditMetadata | undefined): Audi
   return sanitizeObject(metadata, 0);
 }
 
-function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
-  const parsed = Math.trunc(Number(value));
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(parsed, min), max);
-}
-
 function mapRow(row: AuditEntry): AuditEntry {
   let metadata = row.metadata;
   if (typeof metadata === 'string') {
@@ -117,8 +112,7 @@ export class AuditLogService {
   }
 
   async listForMerchant(merchantId: string, query: AuditPageQuery = {}): Promise<AuditPage> {
-    const limit = clampInteger(query.limit, 50, 1, 100);
-    const offset = clampInteger(query.offset, 0, 0, 1_000_000);
+    const { limit, offset } = parsePagination(query);
     const result = await this.db.query<AuditEntry>(
       `SELECT ${selectColumns} FROM audit_log
         WHERE actor_type = 'merchant' AND actor_id = $1
@@ -129,8 +123,7 @@ export class AuditLogService {
   }
 
   async listAll(filters: AuditFilters = {}, query: AuditPageQuery = {}): Promise<AuditPage> {
-    const limit = clampInteger(query.limit, 50, 1, 100);
-    const offset = clampInteger(query.offset, 0, 0, 1_000_000);
+    const { limit, offset } = parsePagination(query);
     const where: string[] = [];
     const values: unknown[] = [];
     const actorType = typeof filters.actorType === 'string' ? filters.actorType.slice(0, 32) : undefined;
@@ -150,8 +143,7 @@ export class AuditLogService {
   }
 
   private page(rows: AuditEntry[], limit: number, offset: number): AuditPage {
-    const hasMore = rows.length > limit;
-    const entries = (hasMore ? rows.slice(0, limit) : rows).map(mapRow);
-    return { entries, pagination: { limit, offset, count: entries.length, hasMore } };
+    const { items, pagination } = paginate(rows, limit, offset);
+    return { entries: items.map(mapRow), pagination };
   }
 }

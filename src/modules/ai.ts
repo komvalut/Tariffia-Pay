@@ -2,15 +2,12 @@ import type { FastifyPluginAsync } from 'fastify';
 import { config } from '../config.js';
 import type { Database } from '../db.js';
 import { parseBody, requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { aiChatCompletionSchema, aiChatStreamSchema, recordAiUsageSchema } from '../schemas.js';
 import { customerAiPricesPerUnit, type AiPricingModel } from '../services/ai-pricing-engine.js';
 import type { AiPricingEngine } from '../services/ai-pricing-engine.js';
 import type { AiGatewayService, AiGatewayStreamEvent } from '../services/ai-gateway-service.js';
 import type { AiProviderRegistry } from '../ai-providers/registry.js';
-
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
-}
 
 export const aiRoutes: FastifyPluginAsync<{
   db: Database; aiPricing: AiPricingEngine; aiGateway: AiGatewayService; aiProviders: AiProviderRegistry;
@@ -122,7 +119,8 @@ export const aiRoutes: FastifyPluginAsync<{
 
   app.get('/v1/ai/usage', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const query = request.query as { limit?: string; customerId?: string };
+    const query = request.query as { limit?: string; offset?: string; customerId?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query(
       `SELECT u.id, u.customer_id AS "customerId", p.slug AS provider, m.slug AS model,
               u.request_id AS "requestId", u.pricing_mode AS "pricingMode", u.input_tokens AS "inputTokens",
@@ -133,9 +131,10 @@ export const aiRoutes: FastifyPluginAsync<{
          FROM ai_usage_records u JOIN ai_providers p ON p.id = u.provider_id
          JOIN ai_models m ON m.id = u.model_id
         WHERE u.merchant_id = $1 AND ($2::uuid IS NULL OR u.customer_id = $2)
-        ORDER BY u.created_at DESC LIMIT $3`,
-      [merchant.id, query.customerId ?? null, pageLimit(query.limit)],
+        ORDER BY u.created_at DESC LIMIT $3 OFFSET $4`,
+      [merchant.id, query.customerId ?? null, limit + 1, offset],
     );
-    return reply.send({ usage: result.rows });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ usage: page.items, pagination: page.pagination });
   });
 };

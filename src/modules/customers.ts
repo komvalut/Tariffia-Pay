@@ -5,10 +5,7 @@ import { HttpError } from '../errors.js';
 import { createCustomerSchema } from '../schemas.js';
 import { newId } from '../security.js';
 import { parseBody, requireMerchant } from '../http.js';
-
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
-}
+import { parsePagination, paginate } from '../pagination.js';
 
 type CustomerCounts = { orderCount: number; paymentCount: number };
 
@@ -47,11 +44,12 @@ function metadataObject(value: Record<string, unknown> | string | null | undefin
 export const customerRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
   app.get('/v1/customers', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const customers = await db.query(
       `SELECT id, external_id AS "externalId", email, name, metadata, created_at AS "createdAt"
-         FROM customers WHERE merchant_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`,
-      [merchant.id, pageLimit(query.limit)],
+         FROM customers WHERE merchant_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
+      [merchant.id, limit + 1, offset],
     );
     // Basic order/payment counts from the existing records, aggregated per customer.
     const orders = await db.query<{ customerId: string; orderCount: number }>(
@@ -67,11 +65,15 @@ export const customerRoutes: FastifyPluginAsync<{ db: Database }> = async (app, 
     );
     const orderCounts = new Map(orders.rows.map((row) => [row.customerId, row.orderCount]));
     const paymentCounts = new Map(payments.rows.map((row) => [row.customerId, row.paymentCount]));
-    return reply.send({ customers: customers.rows.map((customer) => ({
-      ...customer,
-      orderCount: orderCounts.get(customer.id as string) ?? 0,
-      paymentCount: paymentCounts.get(customer.id as string) ?? 0,
-    })) });
+    const page = paginate(customers.rows, limit, offset);
+    return reply.send({
+      customers: page.items.map((customer) => ({
+        ...customer,
+        orderCount: orderCounts.get(customer.id as string) ?? 0,
+        paymentCount: paymentCounts.get(customer.id as string) ?? 0,
+      })),
+      pagination: page.pagination,
+    });
   });
 
   app.get('/v1/customers/:customerId', async (request, reply) => {

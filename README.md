@@ -80,7 +80,7 @@ Other merchant endpoints:
 - `POST /v1/payments/:paymentId/verify` with `{ "transactionHash": "0x..." }`
 - `POST /v1/payment-links`, `GET /v1/payment-links`, `GET /v1/payment-links/:paymentId`, `PATCH /v1/payment-links/:paymentId`, `DELETE /v1/payment-links/:paymentId`
 - `GET /v1/customers`, `GET /v1/customers/:customerId`
-- `GET /v1/ledger?limit=50`
+- `GET /v1/ledger` (supports `limit`/`offset`)
 - `GET /v1/api-keys`, `POST /v1/api-keys`, `DELETE /v1/api-keys/:keyId`
 - `POST /v1/credits/topups`, `POST /v1/credits/deductions`
 - `GET /v1/credits/:customerId/balance`, `/topups`, `/usage`
@@ -94,6 +94,17 @@ Other merchant endpoints:
 - Health: `GET /health`, `GET /ready`, `GET /v1/health` (admin), API docs at `GET /openapi.json` and `GET /docs`
 - Dashboards: `/admin` and `/merchant`; collection reads are available under `/v1/admin/dashboard/*` and merchant-scoped `/v1/dashboard/*`
 - TypeScript SDK: `sdk/` (`@tariffia/pay/server` and credential-free `@tariffia/pay/browser` exports)
+
+### Pagination
+
+Every merchant list endpoint uses one pagination contract: optional `limit` and `offset` query parameters with a default `limit` of 50, a maximum of 100, and an `offset` default of 0. Invalid values (non-integers, `limit` outside 1..100, or a negative `offset`) are rejected with `400 invalid_pagination` — values are never silently clamped. Each page returns a `pagination` object alongside the existing resource field:
+
+```sh
+curl 'http://localhost:8080/v1/orders?limit=25&offset=50' -H 'authorization: Bearer tf_live_REPLACE_ME'
+# { "orders": [ ... ], "pagination": { "limit": 25, "offset": 50, "count": 25, "hasMore": true } }
+```
+
+The contract applies to `GET /v1/orders`, `/v1/customers`, `/v1/payment-links`, `/v1/transactions`, `/v1/ai/usage`, `/v1/webhooks`, `/v1/webhooks/:endpointId/deliveries`, `/v1/credits/:customerId/topups`, `/v1/credits/:customerId/usage`, `/v1/invoices`, `/v1/receipts`, `/v1/ledger`, `/v1/audit-log` and the merchant-scoped `/v1/dashboard/:collection`. Filtering, sorting (newest first), status filters and merchant isolation are unchanged, and only the `pagination` field was added to responses. Small configuration catalogues that are intentionally not paginated — `GET /v1/ai/models`, `GET /v1/sms/services`, `GET /v1/api-keys`, `GET /v1/subscription-plans`, `GET /v1/subscriptions`, `GET /v1/customers/:customerId/subscriptions`, `GET /v1/subscriptions/:subscriptionId/billing-cycles` and `GET /v1/webhooks/:endpointId/deliveries/:deliveryId/attempts` — are documented as such in `GET /openapi.json`. Admin list endpoints follow the same `limit`/`offset` contract.
 
 Create a shareable link from the merchant API:
 

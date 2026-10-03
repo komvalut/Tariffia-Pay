@@ -4,6 +4,7 @@
  */
 
 import { MERCHANT_SCOPES } from './scopes.js';
+import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from './pagination.js';
 
 const errorSchema = {
   type: 'object',
@@ -24,6 +25,13 @@ const commonErrorResponses = {
 };
 
 const merchantSecurity = [{ merchantApiKey: [] }];
+
+// Shared pagination contract used by every merchant list endpoint.
+const paginationParameters = [
+  { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: MAX_PAGE_LIMIT, default: DEFAULT_PAGE_LIMIT }, description: 'Page size (1 to 100). Defaults to 50; invalid values are rejected with 400 invalid_pagination.' },
+  { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 }, description: 'Number of records to skip. Defaults to 0.' },
+] as const;
+const paginationProperty = { pagination: { $ref: '#/components/schemas/Pagination' } } as const;
 
 const orderSchema = {
   type: 'object',
@@ -188,7 +196,11 @@ export const openApiDocument = {
       'Apart from that single admin health endpoint, admin routes are intentionally not documented.',
       'Merchant API keys carry scopes (`<area>:read` or `<area>:write`, where write implies read); a',
       'key missing the scope required by a route receives `403 insufficient_scope`. Keys issued before',
-      'scope enforcement are grandfathered as full access. This description covers existing public and',
+      'scope enforcement are grandfathered as full access. List endpoints use one pagination contract:',
+      'optional `limit` (default 50, 1..100) and `offset` (default 0); invalid values return',
+      '`400 invalid_pagination`, and every page includes a `pagination` object with',
+      '`{ limit, offset, count, hasMore }`. Small configuration catalogues and per-parent histories are',
+      'intentionally not paginated. This description covers existing public and',
       'merchant endpoints only; it never exposes or accepts secrets, private keys or provider credentials.',
     ].join('\n'),
   },
@@ -284,10 +296,10 @@ export const openApiDocument = {
         tags: ['Orders'], security: merchantSecurity, summary: 'List your orders',
         parameters: [
           { name: 'status', in: 'query', schema: { type: 'string', enum: ['CREATED', 'PENDING', 'PAID', 'FAILED', 'EXPIRED', 'CANCELLED'] } },
-          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+          ...paginationParameters,
         ],
         responses: {
-          200: { description: 'Orders, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { orders: { type: 'array', items: { $ref: '#/components/schemas/Order' } } } } } } },
+          200: { description: 'Orders, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { orders: { type: 'array', items: { $ref: '#/components/schemas/Order' } }, ...paginationProperty } } } } },
           ...commonErrorResponses,
         },
       },
@@ -352,8 +364,9 @@ export const openApiDocument = {
       },
       get: {
         tags: ['Payment links'], security: merchantSecurity, summary: 'List your payment links',
+        parameters: [...paginationParameters],
         responses: {
-          200: { description: 'Payment links, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { paymentLinks: { type: 'array', items: { $ref: '#/components/schemas/PaymentLink' } } } } } } },
+          200: { description: 'Payment links, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { paymentLinks: { type: 'array', items: { $ref: '#/components/schemas/PaymentLink' } }, ...paginationProperty } } } } },
           ...commonErrorResponses,
         },
       },
@@ -382,9 +395,9 @@ export const openApiDocument = {
         parameters: [
           { name: 'status', in: 'query', schema: { type: 'string', enum: ['CREATED', 'PENDING', 'DETECTED', 'VERIFYING', 'CONFIRMED', 'FAILED', 'EXPIRED', 'REFUNDED'] } },
           { name: 'network', in: 'query', schema: { type: 'string' } },
-          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+          ...paginationParameters,
         ],
-        responses: { 200: { description: 'Transactions, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { transactions: { type: 'array', items: { $ref: '#/components/schemas/Transaction' } } } } } } }, ...commonErrorResponses },
+        responses: { 200: { description: 'Transactions, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { transactions: { type: 'array', items: { $ref: '#/components/schemas/Transaction' } }, ...paginationProperty } } } } }, ...commonErrorResponses },
       },
     },
     '/v1/transactions/{paymentId}': {
@@ -413,8 +426,8 @@ export const openApiDocument = {
       },
       get: {
         tags: ['Customers'], security: merchantSecurity, summary: 'List your customers',
-        parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } }],
-        responses: { 200: { description: 'Customers, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { customers: { type: 'array', items: { $ref: '#/components/schemas/Customer' } } } } } } }, ...commonErrorResponses },
+        parameters: [...paginationParameters],
+        responses: { 200: { description: 'Customers, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { customers: { type: 'array', items: { $ref: '#/components/schemas/Customer' } }, ...paginationProperty } } } } }, ...commonErrorResponses },
       },
     },
     '/v1/customers/{customerId}': {
@@ -523,20 +536,21 @@ export const openApiDocument = {
     '/v1/credits/{customerId}/topups': {
       get: {
         tags: ['Credits'], security: merchantSecurity, summary: 'List a customer credit top-ups',
-        parameters: [{ name: 'customerId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
-        responses: { 200: { description: 'Top-ups.' }, ...commonErrorResponses },
+        parameters: [{ name: 'customerId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }, ...paginationParameters],
+        responses: { 200: { description: 'Top-ups, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { accountId: { type: 'string' }, topups: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses },
       },
     },
     '/v1/credits/{customerId}/usage': {
       get: {
         tags: ['Credits'], security: merchantSecurity, summary: 'List a customer credit usage',
-        parameters: [{ name: 'customerId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
-        responses: { 200: { description: 'Usage records.' }, ...commonErrorResponses },
+        parameters: [{ name: 'customerId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }, ...paginationParameters],
+        responses: { 200: { description: 'Usage records, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { accountId: { type: 'string' }, usage: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses },
       },
     },
     '/v1/ai/models': {
       get: {
         tags: ['AI'], security: merchantSecurity, summary: 'List enabled AI models with customer prices',
+        description: 'Not paginated: the enabled model catalogue is small and configuration-driven.',
         responses: {
           200: {
             description: 'Enabled models. Provider costs and margins are not exposed.',
@@ -591,8 +605,8 @@ export const openApiDocument = {
     '/v1/ai/usage': {
       get: {
         tags: ['AI'], security: merchantSecurity, summary: 'List recorded AI usage for this merchant',
-        parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer' } }, { name: 'customerId', in: 'query', schema: { type: 'string', format: 'uuid' } }],
-        responses: { 200: { description: 'Usage records without provider costs or margins.' }, ...commonErrorResponses },
+        parameters: [{ name: 'customerId', in: 'query', schema: { type: 'string', format: 'uuid' } }, ...paginationParameters],
+        responses: { 200: { description: 'Usage records without provider costs or margins.', content: { 'application/json': { schema: { type: 'object', properties: { usage: { type: 'array', items: { $ref: '#/components/schemas/AiUsage' } }, ...paginationProperty } } } } }, ...commonErrorResponses },
       },
       post: {
         tags: ['AI'], security: merchantSecurity, summary: 'Report completed AI usage (trusted server-to-server)', description: 'Merchant-reported token counts; not verified against a provider.',
@@ -603,6 +617,7 @@ export const openApiDocument = {
     '/v1/sms/services': {
       get: {
         tags: ['SMS'], security: merchantSecurity, summary: 'List enabled SMS/OTP services and customer prices',
+        description: 'Not paginated: the enabled SMS service catalogue is small and configuration-driven.',
         responses: { 200: { description: 'Enabled services.' }, ...commonErrorResponses },
       },
     },
@@ -637,7 +652,7 @@ export const openApiDocument = {
       },
     },
     '/v1/webhooks': {
-      get: { tags: ['Webhooks'], security: merchantSecurity, summary: 'List your webhook endpoints', responses: { 200: { description: 'Endpoints. Signing secrets are never returned.' }, ...commonErrorResponses } },
+      get: { tags: ['Webhooks'], security: merchantSecurity, summary: 'List your webhook endpoints', parameters: [...paginationParameters], responses: { 200: { description: 'Endpoints, newest first. Signing secrets are never returned.', content: { 'application/json': { schema: { type: 'object', properties: { endpoints: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
       post: {
         tags: ['Webhooks'], security: merchantSecurity, summary: 'Create a webhook endpoint',
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name', 'url', 'events', 'secret'], properties: { name: { type: 'string' }, url: { type: 'string', format: 'uri' }, events: { type: 'array', items: { type: 'string' } }, secret: { type: 'string', minLength: 32, maxLength: 256, description: 'Signing secret; stored encrypted and never returned.' } } } } } },
@@ -660,13 +675,14 @@ export const openApiDocument = {
     '/v1/webhooks/{endpointId}/deliveries': {
       get: {
         tags: ['Webhooks'], security: merchantSecurity, summary: 'List deliveries for an endpoint',
-        parameters: [{ name: 'endpointId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }, { name: 'limit', in: 'query', schema: { type: 'integer' } }],
-        responses: { 200: { description: 'Delivery history.' }, ...commonErrorResponses },
+        parameters: [{ name: 'endpointId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }, ...paginationParameters],
+        responses: { 200: { description: 'Delivery history, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { deliveries: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses },
       },
     },
     '/v1/webhooks/{endpointId}/deliveries/{deliveryId}/attempts': {
       get: {
         tags: ['Webhooks'], security: merchantSecurity, summary: 'List delivery attempts',
+        description: 'Not paginated: attempts for a single delivery are bounded by the configured max attempts.',
         parameters: [
           { name: 'endpointId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
           { name: 'deliveryId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
@@ -675,7 +691,7 @@ export const openApiDocument = {
       },
     },
     '/v1/subscription-plans': {
-      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List subscription plans', responses: { 200: { description: 'Plans.' }, ...commonErrorResponses } },
+      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List subscription plans', description: 'Not paginated: plan catalogues are a small configuration set.', responses: { 200: { description: 'Plans.' }, ...commonErrorResponses } },
       post: {
         tags: ['Subscriptions'], security: merchantSecurity, summary: 'Create a subscription plan',
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name', 'amount', 'interval'], properties: { name: { type: 'string' }, description: { type: 'string' }, amount: { type: 'string' }, currency: { type: 'string', default: 'USDC' }, interval: { type: 'string', enum: ['DAY', 'WEEK', 'MONTH', 'YEAR'] }, intervalCount: { type: 'integer', minimum: 1, maximum: 12 }, trialDays: { type: 'integer', minimum: 0, maximum: 365 }, enabled: { type: 'boolean' } } } } } },
@@ -691,7 +707,7 @@ export const openApiDocument = {
       },
     },
     '/v1/subscriptions': {
-      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List subscriptions', responses: { 200: { description: 'Subscriptions.' }, ...commonErrorResponses } },
+      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List subscriptions', description: 'Not paginated: subscriptions are bounded per merchant and used as a small working set.', responses: { 200: { description: 'Subscriptions.' }, ...commonErrorResponses } },
       post: {
         tags: ['Subscriptions'], security: merchantSecurity, summary: 'Create a subscription',
         parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
@@ -716,10 +732,10 @@ export const openApiDocument = {
       },
     },
     '/v1/subscriptions/{subscriptionId}/billing-cycles': {
-      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List billing cycles', parameters: [{ name: 'subscriptionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { 200: { description: 'Billing cycles with attempts.' }, ...commonErrorResponses } },
+      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List billing cycles', description: 'Not paginated: cycles for a single subscription are a bounded per-parent history.', parameters: [{ name: 'subscriptionId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { 200: { description: 'Billing cycles with attempts.' }, ...commonErrorResponses } },
     },
     '/v1/customers/{customerId}/subscriptions': {
-      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List a customer subscriptions', parameters: [{ name: 'customerId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { 200: { description: 'Subscriptions.' }, ...commonErrorResponses } },
+      get: { tags: ['Subscriptions'], security: merchantSecurity, summary: 'List a customer subscriptions', description: 'Not paginated: subscriptions for one customer are a bounded per-parent set.', parameters: [{ name: 'customerId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { 200: { description: 'Subscriptions.' }, ...commonErrorResponses } },
     },
     '/v1/settings': {
       get: { tags: ['Settings'], security: merchantSecurity, summary: 'Read non-sensitive merchant settings', responses: { 200: { description: 'Settings.' }, ...commonErrorResponses } },
@@ -769,7 +785,7 @@ export const openApiDocument = {
       },
     },
     '/v1/api-keys': {
-      get: { tags: ['API keys'], security: merchantSecurity, summary: 'List your API keys (no secrets or hashes)', responses: { 200: { description: 'API key metadata with status and last-used time.' }, ...commonErrorResponses } },
+      get: { tags: ['API keys'], security: merchantSecurity, summary: 'List your API keys (no secrets or hashes)', description: 'Not paginated: API keys are a small, bounded set per merchant.', responses: { 200: { description: 'API key metadata with status and last-used time.' }, ...commonErrorResponses } },
       post: {
         tags: ['API keys'], security: merchantSecurity, summary: 'Create an API key (secret returned once)',
         description: 'Creates a scoped API key. When `scopes` is omitted the key receives the full default scope catalogue. The plaintext secret is returned only once.',
@@ -815,14 +831,11 @@ export const openApiDocument = {
       get: {
         tags: ['Audit log'], security: merchantSecurity, summary: 'List your append-only audit log (newest first)',
         description: 'Merchant-scoped, append-only history of important account actions. Only safe metadata is stored; API keys, secrets, OTP codes and message content are never recorded.',
-        parameters: [
-          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
-          { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
-        ],
+        parameters: [...paginationParameters],
         responses: {
           200: {
             description: 'Audit entries for the authenticated merchant, newest first.',
-            content: { 'application/json': { schema: { type: 'object', properties: { entries: { type: 'array', items: { $ref: '#/components/schemas/AuditEntry' } }, pagination: { $ref: '#/components/schemas/Pagination' } } } } },
+            content: { 'application/json': { schema: { type: 'object', properties: { entries: { type: 'array', items: { $ref: '#/components/schemas/AuditEntry' } }, ...paginationProperty } } } },
           },
           ...commonErrorResponses,
         },
@@ -845,22 +858,21 @@ export const openApiDocument = {
         tags: ['Merchant dashboard'], security: merchantSecurity, summary: 'Read a merchant dashboard collection',
         parameters: [
           { name: 'collection', in: 'path', required: true, schema: { type: 'string', enum: ['customers', 'orders', 'payments', 'payment-links', 'credit-accounts', 'credit-transactions', 'topups', 'usage', 'webhook-endpoints', 'webhook-deliveries'] } },
-          { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
-          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
           { name: 'q', in: 'query', schema: { type: 'string', maxLength: 120 } },
           { name: 'status', in: 'query', schema: { type: 'string', maxLength: 32 } },
+          ...paginationParameters,
         ],
         responses: {
           200: {
             description: 'Paginated collection rows for the authenticated merchant.',
-            content: { 'application/json': { schema: { type: 'object', properties: { items: { type: 'array', items: { type: 'object', additionalProperties: true } }, page: { type: 'integer' }, limit: { type: 'integer' }, hasMore: { type: 'boolean' } } } } },
+            content: { 'application/json': { schema: { type: 'object', properties: { items: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } },
           },
           ...commonErrorResponses,
         },
       },
     },
     '/v1/invoices': {
-      get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'List invoices for confirmed payments', responses: { 200: { description: 'Invoices.' }, ...commonErrorResponses } },
+      get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'List invoices for confirmed payments', parameters: [...paginationParameters], responses: { 200: { description: 'Invoices, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { invoices: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
     },
     '/v1/invoices/{invoiceRef}': {
       get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'Get one invoice by id or number', parameters: [{ name: 'invoiceRef', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'Invoice.' }, ...commonErrorResponses } },
@@ -869,7 +881,7 @@ export const openApiDocument = {
       get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'Download an invoice PDF', parameters: [{ name: 'invoiceRef', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'PDF document.', content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } } }, ...commonErrorResponses } },
     },
     '/v1/receipts': {
-      get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'List receipts for confirmed payments', responses: { 200: { description: 'Receipts.' }, ...commonErrorResponses } },
+      get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'List receipts for confirmed payments', parameters: [...paginationParameters], responses: { 200: { description: 'Receipts, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { receipts: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
     },
     '/v1/receipts/{receiptId}': {
       get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'Get one receipt', parameters: [{ name: 'receiptId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'Receipt.' }, ...commonErrorResponses } },
@@ -878,7 +890,7 @@ export const openApiDocument = {
       get: { tags: ['Billing documents'], security: merchantSecurity, summary: 'Download a receipt PDF', parameters: [{ name: 'receiptId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'PDF document.', content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } } }, ...commonErrorResponses } },
     },
     '/v1/ledger': {
-      get: { tags: ['Ledger'], security: merchantSecurity, summary: 'List your append-only ledger entries', parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer' } }], responses: { 200: { description: 'Ledger entries.' }, ...commonErrorResponses } },
+      get: { tags: ['Ledger'], security: merchantSecurity, summary: 'List your append-only ledger entries', parameters: [...paginationParameters], responses: { 200: { description: 'Ledger entries, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { entries: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
     },
     '/v1/public/payment-methods': {
       get: { tags: ['Public checkout'], security: [], summary: 'List payment methods available for checkout', responses: { 200: { description: 'Enabled, healthy methods.' } } },

@@ -224,4 +224,33 @@ describe('OpenAPI documentation', () => {
     }
     expect(missing, `Merchant routes missing from OpenAPI: ${missing.join(', ')}`).toEqual([]);
   });
+
+  it('documents the shared pagination contract on every paginated list endpoint', () => {
+    const paginated = [
+      '/v1/orders', '/v1/customers', '/v1/payment-links', '/v1/transactions', '/v1/ai/usage',
+      '/v1/webhooks', '/v1/webhooks/{endpointId}/deliveries', '/v1/credits/{customerId}/topups',
+      '/v1/credits/{customerId}/usage', '/v1/invoices', '/v1/receipts', '/v1/ledger', '/v1/audit-log',
+      '/v1/dashboard/{collection}',
+    ];
+    for (const routePath of paginated) {
+      const get = (openApiDocument.paths as unknown as Record<string, { get: {
+        parameters?: Array<{ name: string }>;
+        responses: Record<string, { content?: Record<string, { schema: { properties?: Record<string, unknown> } }> }>;
+      } }>)[routePath]!.get;
+      const names = (get.parameters ?? []).map((parameter) => parameter.name);
+      expect(names, `${routePath} must document limit`).toContain('limit');
+      expect(names, `${routePath} must document offset`).toContain('offset');
+      const properties = get.responses['200']!.content!['application/json']!.schema.properties!;
+      expect(properties.pagination, `${routePath} must document pagination metadata`).toBeDefined();
+    }
+  });
+
+  it('keeps intentionally non-paginated catalogues free of pagination parameters', () => {
+    for (const routePath of ['/v1/ai/models', '/v1/sms/services', '/v1/api-keys', '/v1/subscription-plans',
+      '/v1/subscriptions', '/v1/customers/{customerId}/subscriptions']) {
+      const get = (openApiDocument.paths as unknown as Record<string, { get: { parameters?: Array<{ name: string }> } }>)[routePath]!.get;
+      const names = (get.parameters ?? []).map((parameter) => parameter.name);
+      expect(names, routePath).not.toContain('limit');
+    }
+  });
 });

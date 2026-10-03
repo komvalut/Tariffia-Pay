@@ -671,14 +671,16 @@ async function loadCollectionRows(container, page, config) {
   if (!tableArea) return;
   tableArea.innerHTML = '<div class="empty-state">Loading records…</div>';
   try {
-    const query = new URLSearchParams({ page: String(activeFilter.page), limit: '25' });
+    const limit = 25;
+    const query = new URLSearchParams({ limit: String(limit), offset: String((activeFilter.page - 1) * limit) });
     if (activeFilter.q) query.set('q', activeFilter.q);
     if (activeFilter.status) query.set('status', activeFilter.status);
     const endpoint = role === 'admin' ? `/v1/admin/dashboard/${config.endpoint}` : `/v1/dashboard/${config.endpoint}`;
     const data = await api(`${endpoint}?${query}`);
     const rows = data.items ?? [];
+    const pagination = data.pagination ?? { hasMore: false };
     tableArea.innerHTML = rows.length ? tableMarkup(rows, config) : '<div class="empty-state">No matching records.</div>';
-    container.querySelector('[data-pager]').innerHTML = `<div class="table-footer"><span>Page ${data.page ?? activeFilter.page}${data.hasMore ? ' · more records available' : ''}</span><div class="pager"><button class="button small" data-prev ${activeFilter.page <= 1 ? 'disabled' : ''}>Previous</button><button class="button small" data-next ${data.hasMore ? '' : 'disabled'}>Next</button></div></div>`;
+    container.querySelector('[data-pager]').innerHTML = `<div class="table-footer"><span>Page ${activeFilter.page}${pagination.hasMore ? ' · more records available' : ''}</span><div class="pager"><button class="button small" data-prev ${activeFilter.page <= 1 ? 'disabled' : ''}>Previous</button><button class="button small" data-next ${pagination.hasMore ? '' : 'disabled'}>Next</button></div></div>`;
     container.querySelector('[data-prev]').addEventListener('click', () => { activeFilter.page--; loadCollectionRows(container, page, config); });
     container.querySelector('[data-next]').addEventListener('click', () => { activeFilter.page++; loadCollectionRows(container, page, config); });
     attachRowActions(container, page, config, rows);

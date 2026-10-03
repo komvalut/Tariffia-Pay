@@ -3,14 +3,11 @@ import { formatUnits, parseUnits } from 'viem';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { parseBody, requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { createCreditDeductionSchema, createCreditTopupSchema } from '../schemas.js';
 import { hashRequest, newId } from '../security.js';
 import type { PaymentCoreService } from '../services/payment-core-service.js';
 import { CreditEngine } from '../services/credit-engine.js';
-
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
-}
 
 export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEngine; paymentCore: PaymentCoreService }> = async (app, { db, credits, paymentCore }) => {
   app.post('/v1/credits/topups', async (request, reply) => {
@@ -102,7 +99,8 @@ export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEng
     const merchant = await requireMerchant(request, db);
     const { customerId } = request.params as { customerId: string };
     const account = await credits.getOrCreateAccount(merchant.id, customerId);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query<{
       id: string; order_id: string; payment_id: string; amount_usdc: string; credit_units: string;
       credits_per_usdc_rate: number; status: string; created_at: Date; credited_at: Date | null; tx_hash: string | null;
@@ -112,17 +110,19 @@ export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEng
               t.created_at, t.credited_at, p.tx_hash
          FROM credit_topups t JOIN payments p ON p.id = t.payment_id
         WHERE t.merchant_id = $1 AND t.customer_id = $2
-        ORDER BY t.created_at DESC LIMIT $3`,
-      [merchant.id, customerId, pageLimit(query.limit)],
+        ORDER BY t.created_at DESC LIMIT $3 OFFSET $4`,
+      [merchant.id, customerId, limit + 1, offset],
     );
+    const page = paginate(result.rows, limit, offset);
     return reply.send({
       accountId: account.id,
-      topups: result.rows.map((topup) => ({
+      topups: page.items.map((topup) => ({
         id: topup.id, orderId: topup.order_id, paymentId: topup.payment_id,
         amountUsdc: topup.amount_usdc, creditAmount: formatUnits(BigInt(topup.credit_units), 6),
         creditsPerUsdcRate: topup.credits_per_usdc_rate, status: topup.status,
         transactionHash: topup.tx_hash, createdAt: topup.created_at, creditedAt: topup.credited_at,
       })),
+      pagination: page.pagination,
     });
   });
 
@@ -130,7 +130,8 @@ export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEng
     const merchant = await requireMerchant(request, db);
     const { customerId } = request.params as { customerId: string };
     const account = await credits.getOrCreateAccount(merchant.id, customerId);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query<{
       id: string; credit_units: string; balance_after_units: string; reference: string | null;
       metadata: Record<string, unknown>; created_at: Date;
@@ -138,16 +139,18 @@ export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEng
       `SELECT id, credit_units::text AS credit_units, balance_after_units::text AS balance_after_units,
               reference, metadata, created_at
          FROM credit_transactions WHERE account_id = $1 AND transaction_type = 'DEDUCTION'
-        ORDER BY created_at DESC LIMIT $2`,
-      [account.id, pageLimit(query.limit)],
+        ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [account.id, limit + 1, offset],
     );
+    const page = paginate(result.rows, limit, offset);
     return reply.send({
       accountId: account.id,
-      usage: result.rows.map((item) => ({
+      usage: page.items.map((item) => ({
         id: item.id, amount: formatUnits(BigInt(item.credit_units), 6),
         balanceAfter: formatUnits(BigInt(item.balance_after_units), 6),
         reference: item.reference, metadata: item.metadata, createdAt: item.created_at,
       })),
+      pagination: page.pagination,
     });
   });
 };

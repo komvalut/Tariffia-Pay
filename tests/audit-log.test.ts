@@ -261,8 +261,15 @@ describe('append-only audit log', () => {
     const firstIds = new Set(firstPage.json().entries.map((entry: { id: string }) => entry.id));
     for (const entry of secondPage.json().entries) expect(firstIds.has(entry.id)).toBe(false);
 
-    const clamped = await merchantAudit(alice.apiKey, '?limit=9999&offset=-5');
-    expect(clamped.json().pagination).toMatchObject({ limit: 100, offset: 0 });
+    const maxed = await merchantAudit(alice.apiKey, '?limit=100');
+    expect(maxed.json().pagination).toMatchObject({ limit: 100, offset: 0 });
+
+    // Invalid pagination is rejected consistently instead of being clamped.
+    const tooLarge = await merchantAudit(alice.apiKey, '?limit=9999');
+    expect(tooLarge.statusCode).toBe(400);
+    expect(tooLarge.json()).toMatchObject({ error: 'invalid_pagination' });
+    const negativeOffset = await merchantAudit(alice.apiKey, '?offset=-5');
+    expect(negativeOffset.statusCode).toBe(400);
 
     const adminPage = await adminAudit('?limit=1');
     expect(adminPage.json().pagination).toMatchObject({ limit: 1, offset: 0, count: 1, hasMore: true });

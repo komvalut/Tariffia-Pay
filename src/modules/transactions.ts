@@ -2,11 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { paymentStatusLabel, paymentStatuses } from '../payment-status.js';
-
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
-}
 
 // Transactions are a merchant-facing view over existing payment records; no new data is stored.
 const transactionSelect = `SELECT p.id AS "paymentId", p.order_id AS "orderId", o.description,
@@ -33,14 +30,16 @@ export const transactionRoutes: FastifyPluginAsync<{ db: Database }> = async (ap
     if (network && network.length > 64) {
       throw new HttpError(400, 'Unknown network filter', 'invalid_transaction_network');
     }
+    const { limit, offset } = parsePagination(query);
     const result = await db.query(
       `${transactionSelect}
         AND ($2::text IS NULL OR p.status = $2)
         AND ($3::text IS NULL OR p.network = $3)
-        ORDER BY p.created_at DESC, p.id DESC LIMIT $4`,
-      [merchant.id, status, network, pageLimit(query.limit)],
+        ORDER BY p.created_at DESC, p.id DESC LIMIT $4 OFFSET $5`,
+      [merchant.id, status, network, limit + 1, offset],
     );
-    return reply.send({ transactions: result.rows.map(transactionView) });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ transactions: page.items.map(transactionView), pagination: page.pagination });
   });
 
   app.get('/v1/transactions/:paymentId', async (request, reply) => {

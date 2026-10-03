@@ -3,6 +3,7 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { requireAdmin, requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { config } from '../config.js';
 import { renderInvoicePdf, renderReceiptPdf, type BillingPdfData } from '../documents/pdf.js';
 import type { PaymentAdapterRegistry } from '../payment-adapters/registry.js';
@@ -76,12 +77,14 @@ export const billingDocumentRoutes: FastifyPluginAsync<{ db: Database; adapters:
 
   app.get('/v1/invoices', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query<BillingDocumentRow>(
-      `${invoiceSelect} WHERE i.merchant_id = $1 ORDER BY i.paid_at DESC, i.id DESC LIMIT $2`,
-      [merchant.id, pageLimit(query.limit)],
+      `${invoiceSelect} WHERE i.merchant_id = $1 ORDER BY i.paid_at DESC, i.id DESC LIMIT $2 OFFSET $3`,
+      [merchant.id, limit + 1, offset],
     );
-    return reply.send({ invoices: result.rows.map((row) => merchantInvoiceView(row, adapters)) });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ invoices: page.items.map((row) => merchantInvoiceView(row, adapters)), pagination: page.pagination });
   });
 
   app.get('/v1/invoices/:invoiceRef.pdf', async (request, reply) => {
@@ -102,12 +105,14 @@ export const billingDocumentRoutes: FastifyPluginAsync<{ db: Database; adapters:
 
   app.get('/v1/receipts', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query<BillingDocumentRow>(
-      `${invoiceSelect} WHERE i.merchant_id = $1 ORDER BY r.issued_at DESC, r.id DESC LIMIT $2`,
-      [merchant.id, pageLimit(query.limit)],
+      `${invoiceSelect} WHERE i.merchant_id = $1 ORDER BY r.issued_at DESC, r.id DESC LIMIT $2 OFFSET $3`,
+      [merchant.id, limit + 1, offset],
     );
-    return reply.send({ receipts: result.rows.map((row) => merchantReceiptView(row, adapters)) });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ receipts: page.items.map((row) => merchantReceiptView(row, adapters)), pagination: page.pagination });
   });
 
   app.get('/v1/receipts/:receiptId.pdf', async (request, reply) => {
@@ -128,20 +133,24 @@ export const billingDocumentRoutes: FastifyPluginAsync<{ db: Database; adapters:
 
   app.get('/v1/admin/invoices', async (request, reply) => {
     requireAdmin(request);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query<BillingDocumentRow>(
-      `${invoiceSelect} ORDER BY i.paid_at DESC, i.id DESC LIMIT $1`, [pageLimit(query.limit)],
+      `${invoiceSelect} ORDER BY i.paid_at DESC, i.id DESC LIMIT $1 OFFSET $2`, [limit + 1, offset],
     );
-    return reply.send({ invoices: result.rows.map((row) => adminInvoiceView(row, adapters)) });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ invoices: page.items.map((row) => adminInvoiceView(row, adapters)), pagination: page.pagination });
   });
 
   app.get('/v1/admin/receipts', async (request, reply) => {
     requireAdmin(request);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query<BillingDocumentRow>(
-      `${invoiceSelect} ORDER BY r.issued_at DESC, r.id DESC LIMIT $1`, [pageLimit(query.limit)],
+      `${invoiceSelect} ORDER BY r.issued_at DESC, r.id DESC LIMIT $1 OFFSET $2`, [limit + 1, offset],
     );
-    return reply.send({ receipts: result.rows.map((row) => adminReceiptView(row, adapters)) });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ receipts: page.items.map((row) => adminReceiptView(row, adapters)), pagination: page.pagination });
   });
 };
 
@@ -339,8 +348,4 @@ function pdfResponse(reply: FastifyReply, pdf: Buffer, filename: string) {
     .header('cache-control', 'no-store')
     .header('content-disposition', `attachment; filename="${safeFilename}"`)
     .send(pdf);
-}
-
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
 }

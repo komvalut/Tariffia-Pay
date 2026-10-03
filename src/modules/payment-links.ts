@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { parseBody, requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { createOrderSchema, updatePaymentLinkSchema } from '../schemas.js';
 import { checkoutQrUrlForPayment, checkoutUrlForPayment } from '../checkout-links.js';
 import type { PaymentCoreService } from '../services/payment-core-service.js';
@@ -33,10 +34,6 @@ const linkSelect = `SELECT p.id AS "paymentId", o.id AS "orderId", o.reference, 
   LEFT JOIN payment_links pl ON pl.payment_id = p.id
  WHERE p.merchant_id = $1`;
 
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
-}
-
 export function paymentLinkView(link: PaymentLinkRecord) {
   return {
     id: link.paymentId,
@@ -59,12 +56,14 @@ export function paymentLinkView(link: PaymentLinkRecord) {
 export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: PaymentCoreService; auditLog: AuditLogService }> = async (app, { db, paymentCore, auditLog }) => {
   app.get('/v1/payment-links', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; offset?: string };
+    const { limit, offset } = parsePagination(query);
     const result = await db.query<PaymentLinkRecord>(
-      `${linkSelect} AND pl.deleted_at IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT $2`,
-      [merchant.id, pageLimit(query.limit)],
+      `${linkSelect} AND pl.deleted_at IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3`,
+      [merchant.id, limit + 1, offset],
     );
-    return reply.send({ paymentLinks: result.rows.map(paymentLinkView) });
+    const page = paginate(result.rows, limit, offset);
+    return reply.send({ paymentLinks: page.items.map(paymentLinkView), pagination: page.pagination });
   });
 
   app.get('/v1/payment-links/:paymentId', async (request, reply) => {

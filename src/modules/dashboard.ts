@@ -3,9 +3,10 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { requireAdmin, requireMerchant } from '../http.js';
+import { parsePagination, paginate } from '../pagination.js';
 import { sanitizeStoredWebhookError } from '../webhooks/error-safety.js';
 
-type DashboardQuery = { q?: string; status?: string; page?: string; limit?: string };
+type DashboardQuery = { q?: string; status?: string; limit?: string; offset?: string };
 type Collection = {
   select: string;
   from: string;
@@ -20,14 +21,6 @@ const adminHtml = readFile(new URL('../../web/admin.html', import.meta.url), 'ut
 const merchantHtml = readFile(new URL('../../web/merchant.html', import.meta.url), 'utf8');
 const dashboardCss = readFile(new URL('../../web/dashboard.css', import.meta.url), 'utf8');
 const dashboardJs = readFile(new URL('../../web/dashboard.js', import.meta.url), 'utf8');
-
-function pageNumber(value: string | undefined): number {
-  return Math.min(Math.max(Math.trunc(Number(value ?? 1)) || 1, 1), 10_000);
-}
-
-function pageLimit(value: string | undefined): number {
-  return Math.min(Math.max(Math.trunc(Number(value ?? 25)) || 25, 1), 100);
-}
 
 async function listCollection(db: Database, collection: Collection, query: DashboardQuery, merchantId?: string) {
   const where: string[] = [];
@@ -47,17 +40,16 @@ async function listCollection(db: Database, collection: Collection, query: Dashb
     values.push(query.status.slice(0, 32));
     where.push(`${collection.status} = $${values.length}`);
   }
-  const page = pageNumber(query.page);
-  const limit = pageLimit(query.limit);
-  values.push(limit + 1, (page - 1) * limit);
+  const { limit, offset } = parsePagination(query);
+  values.push(limit + 1, offset);
   const result = await db.query(
     `SELECT ${collection.select} FROM ${collection.from}
       WHERE ${where.length ? where.join(' AND ') : 'TRUE'}
       ORDER BY ${collection.orderBy} LIMIT $${values.length - 1} OFFSET $${values.length}`,
     values,
   );
-  const hasMore = result.rows.length > limit;
-  return { items: hasMore ? result.rows.slice(0, limit) : result.rows, page, limit, hasMore };
+  const page = paginate(result.rows, limit, offset);
+  return { items: page.items, pagination: page.pagination };
 }
 
 const adminCollections: Record<string, Collection> = {
