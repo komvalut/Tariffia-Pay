@@ -397,9 +397,17 @@ export const openApiDocument = {
     '/v1/customers': {
       post: {
         tags: ['Customers'], security: merchantSecurity, summary: 'Create or update a customer',
+        description: [
+          'Idempotent, merchant-scoped create/update. Identity resolution order: an explicit',
+          '`externalId` match wins; otherwise the request matches an existing customer by normalized',
+          '`email` (trimmed and lowercased). A repeat of the same request returns the existing customer',
+          'instead of creating a duplicate, and a same-email email-only customer is promoted in place',
+          'when an `externalId` is later supplied. A different `externalId` with the same email stays a',
+          'distinct customer. Only provided fields change and `metadata` is shallow-merged.',
+        ].join(' '),
         requestBody: {
           required: true,
-          content: { 'application/json': { schema: { type: 'object', properties: { externalId: { type: 'string', maxLength: 128 }, email: { type: 'string', format: 'email' }, name: { type: 'string', maxLength: 120 }, metadata: { type: 'object', additionalProperties: true } }, description: 'externalId or email is required.' } } },
+          content: { 'application/json': { schema: { type: 'object', properties: { externalId: { type: 'string', maxLength: 128 }, email: { type: 'string', format: 'email', description: 'Trimmed and matched case-insensitively.' }, name: { type: 'string', maxLength: 120 }, metadata: { type: 'object', additionalProperties: true } }, description: 'externalId or email is required.' } } },
         },
         responses: { 201: { description: 'Customer created or updated.', content: { 'application/json': { schema: { type: 'object', properties: { customer: { $ref: '#/components/schemas/Customer' } } } } } }, ...commonErrorResponses },
       },
