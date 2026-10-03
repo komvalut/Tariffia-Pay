@@ -571,9 +571,18 @@ async function renderHealth(container) {
   let error;
   try { health = await fetch('/health', { cache: 'no-store' }).then((response) => response.json()); }
   catch (caught) { error = caught.message; }
-  const overview = await api('/v1/admin/dashboard/overview');
+  const [overview, system] = await Promise.all([
+    api('/v1/admin/dashboard/overview'),
+    role === 'admin' ? api('/v1/health').catch(() => null) : Promise.resolve(null),
+  ]);
   const data = overview.overview ?? {};
+  const dependency = (item) => `<div class="signal"><span class="signal-dot ${item.health?.status === 'healthy' ? '' : 'warn'}"></span><div class="signal-copy"><strong>${esc(item.name ?? item.id)}</strong><span>${esc(item.health?.message ?? '')}</span></div><span class="pill ${item.enabled === false ? 'pending' : item.health?.status === 'healthy' ? 'good' : 'pending'}">${item.enabled === false ? 'Disabled' : esc(item.health?.status ?? 'unknown')}</span></div>`;
+  const systemPanel = system ? `<section class="panel"><div class="panel-head"><div><h2>System health</h2><p>Safe operational state only. No credentials, provider URLs or keys are shown.</p></div><span class="health-badge ${system.status === 'healthy' ? '' : 'down'}">${esc(system.status)}</span></div>
+    <div class="stats-grid">${stat('Overall', system.status, 'Derived from required infrastructure')}${stat('Version', system.api?.version ?? '—', `Up ${Math.floor((system.api?.uptimeSeconds ?? 0) / 60)} min`)}${stat('Database', system.database?.status ?? '—', system.database?.latencyMs != null ? `${system.database.latencyMs} ms` : 'No latency')}${stat('Lightning', system.lightning?.enabled ? system.lightning.status : 'Not enabled', system.lightning?.installed ? `Provider ${system.lightning?.providerType ?? '—'}` : 'Adapter not installed')}</div>
+    <div class="overview-grid"><section class="panel"><div class="panel-head"><div><h3>Payment methods</h3></div></div><div class="signal-list">${(system.paymentAdapters ?? []).map(dependency).join('') || '<div class="empty-state">No payment adapters registered.</div>'}</div></section>
+    <section class="panel"><div class="panel-head"><div><h3>AI and SMS providers</h3></div></div><div class="signal-list">${[...(system.aiProviders ?? []), ...(system.smsProviders ?? [])].map(dependency).join('') || '<div class="empty-state">No AI or SMS providers registered.</div>'}</div></section></div></section>` : '';
   container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Platform status</div><h1>System health</h1><p>Basic API and database readiness, plus operational queue counts.</p></div><button class="button" data-refresh-health>Refresh</button></div>
+    ${systemPanel}
     <div class="stats-grid">${stat('API', health?.status ?? 'Unavailable', error ?? 'GET /health')}${stat('Service', health?.service ?? '—', 'Application response')}${stat('Failed webhooks', data.failed_webhook_deliveries ?? 0, 'Delivery worker review queue')}${stat('Pending payments', data.pending_payments ?? 0, 'Payments under verification')}</div>
     <section class="panel"><div class="panel-head"><div><h2>Runtime response</h2><p>No private configuration is included in this status view.</p></div><span class="health-badge ${health?.status === 'ok' ? '' : 'down'}">${health?.status === 'ok' ? 'Healthy' : 'Unavailable'}</span></div><pre class="mono">${esc(JSON.stringify(health ?? { error: error ?? 'Health request failed' }, null, 2))}</pre></section>`;
   container.querySelector('[data-refresh-health]').addEventListener('click', () => openPage('health'));

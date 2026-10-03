@@ -20,6 +20,8 @@ import { revenueRoutes } from './modules/revenue.js';
 import { settingsRoutes } from './modules/settings.js';
 import { notificationPreferenceRoutes } from './modules/notification-preferences.js';
 import { docsRoutes } from './modules/docs.js';
+import { healthRoutes } from './modules/health.js';
+import { HealthService } from './services/health-service.js';
 import { webhookRoutes } from './modules/webhooks.js';
 import { creditRoutes } from './modules/credits.js';
 import { adminCreditRoutes } from './modules/admin-credits.js';
@@ -79,6 +81,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   await smsProviders.initialize();
   const smsGateway = new SmsGatewayService(db, aiPricing, smsProviders);
   const merchantUsageService = merchantUsage ?? new MerchantUsageService(db);
+  const health = new HealthService(db, adapters, aiProviders, smsProviders);
   const subscriptions = new SubscriptionService(db, paymentCore, adapters);
   await credits.initialize();
   paymentVerification.addLifecycleHandler(credits);
@@ -136,10 +139,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
     void reply.code(500).send({ error: 'internal_error', message: 'An unexpected error occurred' });
   });
 
-  app.get('/health', async (_request, reply) => {
-    await db.query('SELECT 1');
-    return reply.send({ status: 'ok', service: 'tariffia-pay-api' });
-  });
+  await app.register(healthRoutes, { health });
 
   // Per-merchant request usage counters and rate limits. Applied as a preHandler so it
   // runs after the existing global per-address limiter and before every route handler;
@@ -156,16 +156,6 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
       `Merchant ${outcome.category} request rate limit exceeded; retry later`,
       'merchant_rate_limited',
     );
-  });
-
-  app.get('/ready', async (_request, reply) => {
-    try {
-      await db.query('SELECT 1');
-      return reply.send({ status: 'ready', service: 'tariffia-pay-api' });
-    } catch (error) {
-      app.log.warn(safeErrorMetadata(error), 'Readiness check failed');
-      return reply.code(503).send({ status: 'not_ready', service: 'tariffia-pay-api' });
-    }
   });
 
   await app.register(merchantRoutes, { db });

@@ -24,6 +24,12 @@ The API listens on `http://localhost:8080`. `GET /health` verifies API and datab
 
 `GET /openapi.json` serves a hand-written OpenAPI 3.0 description of the existing public and merchant API (authentication, orders, payments, payment links, transactions, customers, revenue, credits, AI, SMS/OTP, webhooks, subscriptions, settings, notification preferences, usage, merchant API keys, billing documents and public checkout/receipts), including request/response schemas, authentication requirements and common error responses. `GET /docs` serves a dependency-free viewer for that document. Both are read-only and document existing endpoints only; no credentials, private keys, provider secrets or merchant data are included. No Swagger UI package is added — the built-in viewer reuses the project's plain Fastify stack.
 
+## Operations and health
+
+`GET /health` is a public liveness probe (API status, service name, version and uptime). `GET /ready` is a public readiness probe that returns `200` only when the database is reachable and every enabled payment adapter finished initialization, and `503` otherwise (its response stays compatible with the original `{ status, service }` shape and adds a `checks` object). `GET /v1/health` is an admin-only operational summary reporting overall `healthy`/`degraded`/`unavailable` plus API version and uptime, database connectivity and latency, payment adapter status, the Lightning provider status (installed/enabled/non-secret provider type), and AI and SMS provider status (enabled/configured/lifecycle/bounded health). Disabled providers are reported but never degrade the status; an enabled provider that is unconfigured or unhealthy marks the service `degraded`. Health output is safe operational data only — secrets, credentials, keys and provider URLs are never exposed, and credential-bearing URLs or bearer tokens inside provider health messages are redacted. The admin dashboard "System health" page shows this summary.
+
+`GET /openapi.json` serves a hand-written OpenAPI 3.0 description of the existing public and merchant API (authentication, orders, payments, payment links, transactions, customers, revenue, credits, AI, SMS/OTP, webhooks, subscriptions, settings, notification preferences, usage, merchant API keys, billing documents and public checkout/receipts), including request/response schemas, authentication requirements and common error responses. `GET /docs` serves a dependency-free viewer for that document. Both are read-only and document existing endpoints only; no credentials, private keys, provider secrets or merchant data are included. No Swagger UI package is added — the built-in viewer reuses the project's plain Fastify stack.
+
 For development without the API container:
 
 ```sh
@@ -85,6 +91,7 @@ Other merchant endpoints:
 - SMS: `GET /v1/sms/services`, `POST /v1/sms/send`, `POST /v1/sms/otp`
 - Admin SMS: `GET/POST /v1/admin/sms/providers`, `PUT /v1/admin/sms/providers/:providerId`, `POST /v1/admin/sms/providers/:providerId/health`, `GET /v1/admin/sms/services`, `POST /v1/admin/sms/providers/:providerId/services`, `PUT /v1/admin/sms/services/:serviceId`, `GET /v1/admin/sms/requests`, `GET /v1/admin/sms/usage`
 - Admin usage: `GET /v1/admin/usage/merchants`, `GET /v1/admin/usage/merchants/:merchantId`, `PUT /v1/admin/usage/merchants/:merchantId`
+- Health: `GET /health`, `GET /ready`, `GET /v1/health` (admin), API docs at `GET /openapi.json` and `GET /docs`
 - Dashboards: `/admin` and `/merchant`; collection reads are available under `/v1/admin/dashboard/*` and merchant-scoped `/v1/dashboard/*`
 - TypeScript SDK: `sdk/` (`@tariffia/pay/server` and credential-free `@tariffia/pay/browser` exports)
 
