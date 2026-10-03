@@ -1,65 +1,13 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { newDb } from 'pg-mem';
-import type { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from '../src/db.js';
 import { buildApp } from '../src/app.js';
 import { hashApiKey } from '../src/security.js';
+import { createMigratedDatabase } from './fixtures/pg-mem-database.js';
 
 const adminHeaders = { 'x-admin-api-key': 'dev-admin-key-change-this-before-deploy' };
 
-function pgAdapterPool(memory: ReturnType<typeof newDb>): Pool {
-  const adapter = memory.adapters.createPg();
-  return new adapter.Pool() as Pool;
-}
-
 async function createDatabase(): Promise<Database> {
-  const memory = newDb({ autoCreateForeignKeyIndices: true });
-  const pool = pgAdapterPool(memory);
-  const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../migrations');
-  let phaseOne = await readFile(path.join(migrationsDir, '0001_phase1.sql'), 'utf8');
-  phaseOne = phaseOne.split('CREATE OR REPLACE FUNCTION reject_ledger_mutation()')[0] ?? phaseOne;
-  await pool.query(phaseOne);
-  const phaseTwo = await readFile(path.join(migrationsDir, '0002_usdc_base.sql'), 'utf8');
-  const backfillStart = phaseTwo.indexOf('UPDATE payments\n   SET adapter_data = jsonb_build_object');
-  if (backfillStart >= 0) {
-    const backfillEnd = phaseTwo.indexOf(';', backfillStart);
-    await pool.query(phaseTwo.slice(0, backfillStart) + phaseTwo.slice(backfillEnd + 1));
-  } else {
-    await pool.query(phaseTwo);
-  }
-  let webhookMigration = await readFile(path.join(migrationsDir, '0003_webhooks.sql'), 'utf8');
-  webhookMigration = webhookMigration.replace(
-    /event_type text NOT NULL CHECK \(event_type IN \([\s\S]*?\)\),/,
-    'event_type text NOT NULL,',
-  );
-  await pool.query(webhookMigration);
-  for (const migration of ['0004_credit_engine.sql', '0005_ai_pricing.sql', '0006_invoices_receipts.sql',
-    '0007_subscriptions.sql', '0008_ai_provider_integration.sql', '0009_sms_otp.sql',
-    '0010_sms_provider_hardening.sql', '0011_merchant_usage_limits.sql',
-    '0012_payment_links.sql', '0015_audit_log.sql']) {
-    await pool.query(await readFile(path.join(migrationsDir, migration), 'utf8'));
-  }
-  return {
-    query: (text, values = []) => pool.query(text, values),
-    transaction: async (run) => {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const result = await run(client);
-        await client.query('COMMIT');
-        return result;
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
-    close: () => pool.end(),
-  } as Database;
+  return createMigratedDatabase();
 }
 
 describe('merchant self-service API keys', () => {

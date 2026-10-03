@@ -26,6 +26,7 @@ import { WebhookDeliveryWorker } from '../src/services/webhook-delivery-worker.j
 import { checkoutUrlForPayment } from '../src/checkout-links.js';
 import { checkoutQrContent } from '../src/modules/checkout.js';
 import { verifyWebhookSignature } from '../src/webhooks/signature.js';
+import { withoutAuditTrigger } from './fixtures/pg-mem-database.js';
 
 const usdcAddress = '0x833589fCD6eDb6E08f4c7C32d4F71b54bdA02913';
 
@@ -96,6 +97,11 @@ describe('Tariffia merchant and payment API', () => {
     await pool.query(await readFile(path.join(migrationsDir, '0011_merchant_usage_limits.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0012_payment_links.sql'), 'utf8'));
     await pool.query(await readFile(path.join(migrationsDir, '0015_audit_log.sql'), 'utf8'));
+    // pg-mem cannot execute the plpgsql append-only trigger; production Postgres applies it.
+    const auditAppendOnly = withoutAuditTrigger(await readFile(path.join(migrationsDir, '0016_audit_log_append_only.sql'), 'utf8'));
+    if (auditAppendOnly.split(/\r?\n/).some((line) => line.trim() && !line.trimStart().startsWith('--'))) {
+      await pool.query(auditAppendOnly);
+    }
 
     db = {
       query: (text, values = []) => pool.query(text, values),
