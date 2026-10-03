@@ -5,6 +5,7 @@ import { parseBody, requireMerchant } from '../http.js';
 import { createOrderSchema, updatePaymentLinkSchema } from '../schemas.js';
 import { checkoutQrUrlForPayment, checkoutUrlForPayment } from '../checkout-links.js';
 import type { PaymentCoreService } from '../services/payment-core-service.js';
+import type { AuditLogService } from '../services/audit-log-service.js';
 
 type PaymentLinkRecord = {
   paymentId: string;
@@ -55,7 +56,7 @@ export function paymentLinkView(link: PaymentLinkRecord) {
   };
 }
 
-export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: PaymentCoreService }> = async (app, { db, paymentCore }) => {
+export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: PaymentCoreService; auditLog: AuditLogService }> = async (app, { db, paymentCore, auditLog }) => {
   app.get('/v1/payment-links', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
     const query = request.query as { limit?: string };
@@ -95,6 +96,11 @@ export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: 
       [paymentId, merchant.id, body.enabled, disabledAt],
     );
     const updated = await db.query<PaymentLinkRecord>(`${linkSelect} AND p.id = $2`, [merchant.id, paymentId]);
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id,
+      action: body.enabled ? 'payment_link.enable' : 'payment_link.disable',
+      resourceType: 'payment_link', resourceId: paymentId, metadata: { enabled: body.enabled },
+    });
     return reply.send({ paymentLink: paymentLinkView(updated.rows[0]!) });
   });
 
@@ -111,6 +117,10 @@ export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: 
        ON CONFLICT (payment_id) DO UPDATE SET enabled = false, disabled_at = $3, deleted_at = $3, updated_at = now()`,
       [paymentId, merchant.id, now],
     );
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'payment_link.delete',
+      resourceType: 'payment_link', resourceId: paymentId,
+    });
     return reply.code(204).send();
   });
 

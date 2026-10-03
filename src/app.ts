@@ -48,6 +48,8 @@ import { smsRoutes } from './modules/sms.js';
 import { adminSmsRoutes } from './modules/admin-sms.js';
 import { merchantUsageRoutes } from './modules/usage.js';
 import { MerchantUsageService } from './services/merchant-usage-service.js';
+import { auditLogRoutes } from './modules/audit-log.js';
+import { AuditLogService } from './services/audit-log-service.js';
 
 type AppOptions = {
   db: Database;
@@ -81,6 +83,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   await smsProviders.initialize();
   const smsGateway = new SmsGatewayService(db, aiPricing, smsProviders);
   const merchantUsageService = merchantUsage ?? new MerchantUsageService(db);
+  const auditLog = new AuditLogService(db);
   const health = new HealthService(db, adapters, aiProviders, smsProviders);
   const subscriptions = new SubscriptionService(db, paymentCore, adapters);
   await credits.initialize();
@@ -159,19 +162,19 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   });
 
   await app.register(merchantRoutes, { db });
-  await app.register(apiKeyRoutes, { db });
+  await app.register(apiKeyRoutes, { db, auditLog });
   await app.register(customerRoutes, { db });
   await app.register(orderRoutes, { db, paymentCore });
-  await app.register(paymentLinkRoutes, { db, paymentCore });
+  await app.register(paymentLinkRoutes, { db, paymentCore, auditLog });
   await app.register(paymentRoutes, { db, verification: paymentVerification, adapters });
   await app.register(transactionRoutes, { db });
   await app.register(revenueRoutes, { db });
-  await app.register(settingsRoutes, { db });
-  await app.register(notificationPreferenceRoutes, { db });
+  await app.register(settingsRoutes, { db, auditLog });
+  await app.register(notificationPreferenceRoutes, { db, auditLog });
   await app.register(docsRoutes);
   await app.register(checkoutRoutes, { db, verification: paymentVerification, adapters });
   await app.register(billingDocumentRoutes, { db, adapters });
-  await app.register(webhookRoutes, { db });
+  await app.register(webhookRoutes, { db, auditLog });
   await app.register(adminWebhookRoutes, { db });
   await app.register(creditRoutes, { db, credits, paymentCore });
   await app.register(adminCreditRoutes, { db, credits });
@@ -182,6 +185,7 @@ export async function buildApp({ db, migrate, paymentAdapter, adapterRegistry, a
   await app.register(smsRoutes, { db, smsGateway });
   await app.register(adminSmsRoutes, { db, smsProviders });
   await app.register(merchantUsageRoutes, { db, merchantUsage: merchantUsageService });
+  await app.register(auditLogRoutes, { db, auditLog });
   await app.register(ledgerRoutes, { db });
   await app.register(dashboardRoutes, { db });
   if (config.NODE_ENV !== 'test') {

@@ -4,8 +4,9 @@ import { HttpError } from '../errors.js';
 import { requireMerchant, parseBody } from '../http.js';
 import { createApiKey, newId } from '../security.js';
 import { createApiKeySchema } from '../schemas.js';
+import type { AuditLogService } from '../services/audit-log-service.js';
 
-export const apiKeyRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
+export const apiKeyRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLogService }> = async (app, { db, auditLog }) => {
   app.get('/v1/api-keys', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
     const result = await db.query<{ status: string }>(
@@ -32,6 +33,11 @@ export const apiKeyRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { 
       [newId(), merchant.id, body.name, key.prefix, key.hash],
     );
     // The plaintext secret is returned exactly once and is only ever stored as a pepper-hashed HMAC.
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'api_key.create',
+      resourceType: 'api_key', resourceId: result.rows[0]?.id as string,
+      metadata: { name: body.name, prefix: key.prefix },
+    });
     return reply.code(201).send({ apiKey: result.rows[0], secret: key.raw, warning: 'Store this API key now. It will not be shown again.' });
   });
 
@@ -46,6 +52,10 @@ export const apiKeyRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { 
       [keyId, merchant.id],
     );
     if (!result.rows[0]) throw new HttpError(404, 'API key not found', 'not_found');
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'api_key.revoke',
+      resourceType: 'api_key', resourceId: keyId,
+    });
     return reply.code(204).send();
   });
 };

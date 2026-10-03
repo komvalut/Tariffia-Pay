@@ -12,7 +12,7 @@ const navItems = {
     ['payments', 'Payments'], ['usdc-transactions', 'USDC transactions'], ['credit-accounts', 'Credit accounts'],
     ['credit-transactions', 'Credit transactions'], ['ai-providers', 'AI providers'], ['ai-models', 'Models & pricing'],
     ['usage', 'Usage & margins'], ['webhook-endpoints', 'Webhook endpoints'], ['webhook-deliveries', 'Delivery logs'],
-    ['failed-payments', 'Failed / expired'], ['health', 'System health'],
+    ['failed-payments', 'Failed / expired'], ['health', 'System health'], ['audit-log', 'Audit log'],
   ],
   merchant: [
     ['overview', 'Overview'], ['api-usage', 'API usage'], ['api-keys', 'API keys'], ['customers', 'Customers'], ['orders', 'Orders'], ['payments', 'Payments'],
@@ -20,7 +20,7 @@ const navItems = {
     ['payment-links', 'Payment links'], ['credit-accounts', 'Credit balances'], ['topups', 'Credit top-ups'],
     ['ai-models', 'AI models'], ['usage', 'Usage & cost'], ['webhooks', 'Webhooks'],
     ['webhook-endpoints', 'Webhook settings'], ['webhook-deliveries', 'Delivery history'], ['settings', 'Settings'],
-    ['notifications', 'Notifications'],
+    ['notifications', 'Notifications'], ['activity', 'Activity'],
   ],
 };
 
@@ -108,6 +108,74 @@ function formatDate(value) {
 
 function stat(label, value, foot = '') {
   return `<article class="stat-card"><div class="stat-label"><span>${esc(label)}</span><span class="nav-mark">/</span></div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></article>`;
+}
+
+function auditMetadataSummary(metadata) {
+  if (!metadata || typeof metadata !== 'object') return '—';
+  const parts = [];
+  if (Array.isArray(metadata.fields)) parts.push(`fields: ${metadata.fields.join(', ')}`);
+  if (Array.isArray(metadata.changed)) parts.push(`changed: ${metadata.changed.join(', ')}`);
+  if (metadata.name !== undefined && metadata.name !== null) parts.push(`name: ${metadata.name}`);
+  if (metadata.prefix !== undefined && metadata.prefix !== null) parts.push(`prefix: ${metadata.prefix}`);
+  if (metadata.enabled !== undefined && metadata.enabled !== null) parts.push(`enabled: ${metadata.enabled}`);
+  return parts.length ? parts.join(' · ') : '—';
+}
+
+function auditRows(entries, showActor) {
+  return entries.map((entry) => `<tr>
+    <td>${esc(formatDate(entry.createdAt))}</td>
+    ${showActor ? `<td>${esc(entry.actorType)}${entry.actorId ? ` · ${esc(String(entry.actorId).slice(0, 8))}` : ''}</td>` : ''}
+    <td><span class="mono">${esc(entry.action)}</span></td>
+    <td>${esc(entry.resourceType)}${entry.resourceId ? ` · ${esc(String(entry.resourceId).slice(0, 8))}` : ''}</td>
+    <td>${esc(auditMetadataSummary(entry.metadata))}</td>
+  </tr>`).join('');
+}
+
+async function renderMerchantActivity(container) {
+  const response = await api('/v1/audit-log');
+  const entries = response.entries ?? [];
+  container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Account activity</div><h1>Activity</h1><p>A read-only, append-only record of important actions on your account. Secrets and message content are never recorded.</p></div><button class="button" data-audit-refresh>Refresh</button></div>
+    <section class="panel">${entries.length
+      ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Action</th><th>Resource</th><th>Details</th></tr></thead><tbody>${auditRows(entries, false)}</tbody></table></div>`
+      : '<div class="empty-state">No activity recorded yet.</div>'}</section>`;
+  container.querySelector('[data-audit-refresh]').addEventListener('click', () => openPage('activity'));
+}
+
+let adminAuditFilter = { page: 1, actorType: '', action: '', resourceType: '' };
+
+async function renderAdminAuditLog(container) {
+  const limit = 25;
+  const params = new URLSearchParams({ limit: String(limit), offset: String((adminAuditFilter.page - 1) * limit) });
+  if (adminAuditFilter.actorType) params.set('actorType', adminAuditFilter.actorType);
+  if (adminAuditFilter.action) params.set('action', adminAuditFilter.action);
+  if (adminAuditFilter.resourceType) params.set('resourceType', adminAuditFilter.resourceType);
+  const response = await api(`/v1/admin/audit-log?${params}`);
+  const entries = response.entries ?? [];
+  const pagination = response.pagination ?? { hasMore: false };
+  container.innerHTML = `<div class="page-head"><div><div class="eyebrow">Platform operations</div><h1>Audit log</h1><p>Append-only record of important admin and merchant actions. Credentials, secrets, OTP codes and message content are never stored.</p></div></div>
+    <section class="panel"><div class="toolbar">
+      <label class="field filter-field"><span>Actor type</span><select data-audit-actor><option value="">All</option><option value="merchant">Merchant</option><option value="admin">Admin</option></select></label>
+      <label class="field search-field"><span>Action</span><input data-audit-action value="${esc(adminAuditFilter.action)}" placeholder="settings.update"></label>
+      <label class="field search-field"><span>Resource type</span><input data-audit-resource value="${esc(adminAuditFilter.resourceType)}" placeholder="settings"></label>
+      <button class="button" data-audit-run>Apply filters</button></div>
+      ${entries.length
+        ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Resource</th><th>Details</th></tr></thead><tbody>${auditRows(entries, true)}</tbody></table></div>`
+        : '<div class="empty-state">No audit entries match these filters.</div>'}
+      <div class="table-footer"><span>Page ${adminAuditFilter.page}</span><span>
+        <button class="button small" data-audit-prev ${adminAuditFilter.page <= 1 ? 'disabled' : ''}>Previous</button>
+        <button class="button small" data-audit-next ${pagination.hasMore ? '' : 'disabled'}>Next</button></span></div></section>`;
+  const actor = container.querySelector('[data-audit-actor]');
+  actor.value = adminAuditFilter.actorType;
+  actor.addEventListener('change', () => { adminAuditFilter.actorType = actor.value; adminAuditFilter.page = 1; openPage('audit-log'); });
+  const readFilters = () => {
+    adminAuditFilter.action = container.querySelector('[data-audit-action]').value.trim();
+    adminAuditFilter.resourceType = container.querySelector('[data-audit-resource]').value.trim();
+  };
+  container.querySelector('[data-audit-action]').addEventListener('change', () => { readFilters(); adminAuditFilter.page = 1; openPage('audit-log'); });
+  container.querySelector('[data-audit-resource]').addEventListener('change', () => { readFilters(); adminAuditFilter.page = 1; openPage('audit-log'); });
+  container.querySelector('[data-audit-run]').addEventListener('click', () => { readFilters(); adminAuditFilter.page = 1; openPage('audit-log'); });
+  container.querySelector('[data-audit-prev]').addEventListener('click', () => { adminAuditFilter.page = Math.max(1, adminAuditFilter.page - 1); openPage('audit-log'); });
+  container.querySelector('[data-audit-next]').addEventListener('click', () => { if (pagination.hasMore) { adminAuditFilter.page += 1; openPage('audit-log'); } });
 }
 
 async function renderMerchantApiUsage(container) {
@@ -488,6 +556,7 @@ function setPageTitle(id) {
   const title = id === 'overview' ? 'Overview' : id === 'health' ? 'System health' :
     id === 'api-usage' ? 'API usage' : id === 'api-keys' ? 'API keys' : id === 'webhooks' ? 'Webhooks' :
     id === 'transactions' ? 'Transactions' : id === 'settings' ? 'Settings' : id === 'notifications' ? 'Notifications' :
+    id === 'activity' ? 'Activity' : id === 'audit-log' ? 'Audit log' :
     (tables[role][id]?.title ?? (id === 'ai-models' ? 'Available AI models' : id));
   document.querySelector('#crumb-current').textContent = title;
   document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === id));
@@ -510,6 +579,8 @@ async function openPage(id) {
     else if (role === 'merchant' && id === 'transactions') await renderMerchantTransactions(container);
     else if (role === 'merchant' && id === 'settings') await renderMerchantSettings(container);
     else if (role === 'merchant' && id === 'notifications') await renderMerchantNotifications(container);
+    else if (role === 'merchant' && id === 'activity') await renderMerchantActivity(container);
+    else if (role === 'admin' && id === 'audit-log') await renderAdminAuditLog(container);
     else if (role === 'merchant' && id === 'ai-models') await renderMerchantModels(container);
     else await renderCollectionPage(container, id, title);
   } catch (error) {

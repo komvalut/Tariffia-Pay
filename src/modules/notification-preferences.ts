@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { parseBody, requireMerchant } from '../http.js';
 import { updateNotificationPreferencesSchema } from '../schemas.js';
+import type { AuditLogService } from '../services/audit-log-service.js';
 
 type PreferenceRow = {
   payment_confirmed: boolean;
@@ -35,7 +36,7 @@ async function loadPreferences(db: Database, merchantId: string) {
   };
 }
 
-export const notificationPreferenceRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
+export const notificationPreferenceRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLogService }> = async (app, { db, auditLog }) => {
   app.get('/v1/notification-preferences', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
     return reply.send({ preferences: await loadPreferences(db, merchant.id) });
@@ -55,6 +56,11 @@ export const notificationPreferenceRoutes: FastifyPluginAsync<{ db: Database }> 
       [merchant.id, body.paymentConfirmed, body.paymentFailed, body.paymentExpired, body.creditTopup,
         body.aiRequestFailed, body.smsRequestFailed, body.webhookFailed],
     );
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'notification_preferences.update',
+      resourceType: 'notification_preferences', resourceId: merchant.id,
+      metadata: { preferences: body },
+    });
     return reply.send({ preferences: await loadPreferences(db, merchant.id) });
   });
 };

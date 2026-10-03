@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { parseBody, requireMerchant } from '../http.js';
 import { updateMerchantSettingsSchema } from '../schemas.js';
+import type { AuditLogService } from '../services/audit-log-service.js';
 
 const defaultCurrency = 'USDC';
 const defaultTimezone = 'UTC';
@@ -35,7 +36,7 @@ async function loadSettings(db: Database, merchantId: string) {
   };
 }
 
-export const settingsRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
+export const settingsRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLogService }> = async (app, { db, auditLog }) => {
   app.get('/v1/settings', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
     return reply.send({ settings: await loadSettings(db, merchant.id) });
@@ -53,6 +54,11 @@ export const settingsRoutes: FastifyPluginAsync<{ db: Database }> = async (app, 
          display_name = $2, support_email = $3, default_currency = $4, timezone = $5, updated_at = now()`,
       [merchant.id, body.displayName, body.supportEmail, body.defaultCurrency, body.timezone],
     );
+    // Only which fields changed is recorded; the setting values themselves are not.
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'settings.update',
+      resourceType: 'settings', resourceId: merchant.id, metadata: { fields: Object.keys(body) },
+    });
     return reply.send({ settings: await loadSettings(db, merchant.id) });
   });
 };

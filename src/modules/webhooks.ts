@@ -7,12 +7,13 @@ import { newId } from '../security.js';
 import { encryptWebhookSecret } from '../webhooks/secret-crypto.js';
 import { validateWebhookUrl } from '../webhooks/url.js';
 import { sanitizeStoredWebhookError } from '../webhooks/error-safety.js';
+import type { AuditLogService } from '../services/audit-log-service.js';
 
 function pageLimit(value: string | undefined): number {
   return Math.min(Math.max(Number(value ?? 50) || 50, 1), 100);
 }
 
-export const webhookRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
+export const webhookRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLogService }> = async (app, { db, auditLog }) => {
   app.get('/v1/webhooks', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
     const result = await db.query(
@@ -34,6 +35,11 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database }> = async (app, {
        RETURNING id, name, url, events, enabled, created_at AS "createdAt", updated_at AS "updatedAt"`,
       [newId(), merchant.id, body.name, url, body.events, encrypted.ciphertext, encrypted.nonce, encrypted.authTag],
     );
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'webhook.create',
+      resourceType: 'webhook', resourceId: result.rows[0]?.id as string,
+      metadata: { name: body.name },
+    });
     return reply.code(201).send({ endpoint: result.rows[0] });
   });
 
@@ -77,6 +83,13 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database }> = async (app, {
       }
       return endpoint.rows[0];
     });
+    // Only the names of changed fields are recorded; the new URL, secret and events are not.
+    const changed = ['name', 'url', 'events', 'enabled']
+      .filter((field) => (body as Record<string, unknown>)[field] !== undefined);
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'webhook.update',
+      resourceType: 'webhook', resourceId: endpointId, metadata: { changed },
+    });
     return reply.send({ endpoint: updated });
   });
 
@@ -98,6 +111,10 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database }> = async (app, {
       return true;
     });
     if (!deleted) throw new HttpError(404, 'Webhook endpoint not found', 'not_found');
+    await auditLog.record({
+      actorType: 'merchant', actorId: merchant.id, action: 'webhook.delete',
+      resourceType: 'webhook', resourceId: endpointId,
+    });
     return reply.code(204).send();
   });
 
