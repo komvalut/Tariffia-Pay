@@ -128,7 +128,7 @@ Merchant notification preferences are available through `GET /v1/notification-pr
 
 Production startup requires explicit database, admin, API-key pepper, public URL, and webhook encryption configuration. Admin and pepper secrets must be distinct random values of at least 32 characters; `PUBLIC_BASE_URL` and `BASE_RPC_URL` must use HTTPS. Configure `TRUST_PROXY` only with the IPs/CIDRs of trusted reverse proxies; forwarded client addresses are not trusted by default. API requests are rate-limited per client address, and responses include basic content-type, framing, referrer, permissions, and CSP protections. Production webhook delivery pins the validated DNS answer to the outbound connection to prevent DNS-rebinding SSRF.
 
-For Compose-based deployment, migrations, readiness, upgrades, and PostgreSQL backup/restore procedures, see [`PRODUCTION.md`](PRODUCTION.md).
+For Compose-based deployment, migrations, readiness, upgrades, and PostgreSQL backup/restore procedures, see [`PRODUCTION.md`](PRODUCTION.md). Database backups use `npm run backup` / `npm run backup:verify` / `npm run backup:restore` (`scripts/db-backup.mjs`), which wrap the stock PostgreSQL 16 `pg_dump`/`pg_restore` tools, read `DATABASE_URL` from the environment without printing it, and exclude and verify out ephemeral runtime/cache data.
 
 ## Invoices and Receipts
 

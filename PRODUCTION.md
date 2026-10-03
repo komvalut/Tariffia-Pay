@@ -54,32 +54,84 @@ npm run migrate:production
 
 ## Backups and Restore
 
-Create restricted custom-format dumps outside the database container, encrypt them before retaining or transferring them off-host, and periodically verify restores. The database contains payment/ledger records and encrypted webhook signing secrets. Preserve `WEBHOOK_ENCRYPTION_KEY` separately: without the matching key, stored webhook secrets cannot be decrypted after restore.
+The database holds payment/ledger records and encrypted webhook signing secrets. Create restricted custom-format dumps, encrypt them before retaining or transferring them off-host, and periodically verify restores. Preserve `WEBHOOK_ENCRYPTION_KEY` separately: without the matching key, stored webhook secrets cannot be decrypted after restore.
 
-For example, stream a custom-format dump through `age` so plaintext is not written to disk. `age` and a configured recipient are required for this example; use an equivalent approved encryption tool if preferred.
+`scripts/db-backup.mjs` wraps the stock PostgreSQL 16 client tools (`pg_dump`/`pg_restore`) with the safety rails below. It adds no npm dependencies. Run it from the repository root on the host (or any host with the PostgreSQL 16 client installed and network access to the database) with `DATABASE_URL` in the environment. The npm aliases are `npm run backup`, `npm run backup:verify`, and `npm run backup:restore`.
+
+Safety properties of the tooling:
+
+- `DATABASE_URL` is read from the environment only, never from the command line, and is never printed. Connection details reach `pg_dump`/`pg_restore` through `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`, so neither the URL nor the password appears in argv or process listings.
+- Credentials are redacted from all command output and errors; only `user@host:port/database` is shown.
+- Runtime/cache table data is excluded from dumps and the exclusion is verified after every backup. The ephemeral tables are `merchant_request_counters` (per-minute rate-limit counters) and `payment_scan_cursors` (block-scan position). Both rebuild automatically; their table definitions are still backed up.
+- Dumps default to `backups/tariffia-<UTC>.dump` with `umask 077`. The `backups/` directory and `*.dump` / `*.dump.age` files are gitignored and must never be committed.
+- `restore` refuses to run without `--yes`, and in production also requires `RESTORE_CONFIRM=<database name>`.
+
+### Create a backup
+
+```sh
+umask 077
+DATABASE_URL=... npm run backup -- --output backups/tariffia.dump
+```
+
+The command writes a custom-format archive, then immediately lists it with `pg_restore --list` to confirm the expected application tables are present and that no runtime/cache table data was included. To also capture the runtime tables (for diagnostics only), pass `--include-runtime-data`.
+
+Encrypt before it leaves the host; this example streams a fresh dump through `age` so plaintext is not retained. `age` and a configured recipient are required for this example; use an equivalent approved encryption tool if preferred.
 
 ```sh
 umask 077
 set -o pipefail
 docker compose --env-file .env.production exec -T db \
-  pg_dump -U tariffia -d tariffia --format=custom \
-  | age -r "$BACKUP_AGE_RECIPIENT" > "tariffia-$(date -u +%Y%m%dT%H%M%SZ).dump.age"
+  pg_dump -U tariffia -d tariffia --format=custom --no-owner --no-privileges \
+    --exclude-table-data public.merchant_request_counters \
+    --exclude-table-data public.payment_scan_cursors \
+  | age -r "$BACKUP_AGE_RECIPIENT" > "backups/tariffia-$(date -u +%Y%m%dT%H%M%SZ).dump.age"
 ```
 
-Restore by stopping application writers, recreating the database, and streaming a verified encrypted dump through decryption into PostgreSQL:
+### Check backup integrity
+
+Run this before every restore and on a schedule against retained archives (it needs no database connection; it only reads the archive):
 
 ```sh
-docker compose --env-file .env.production stop api migrate
-docker compose --env-file .env.production exec -T db dropdb -U tariffia --if-exists --force tariffia
-docker compose --env-file .env.production exec -T db createdb -U tariffia tariffia
-set -o pipefail
-age -d -i "$BACKUP_AGE_IDENTITY" tariffia-backup.dump.age \
-  | docker compose --env-file .env.production exec -T db \
-      pg_restore -U tariffia -d tariffia --no-owner
-docker compose --env-file .env.production up -d
+DATABASE_URL=... npm run backup:verify -- backups/tariffia-20260101T000000Z.dump
 ```
 
-After restoring, confirm `/ready`, inspect API logs, and verify recent payments, credit accounts, webhook settings, and schema migration versions. Test restore procedures periodically; do not treat a successful dump command as a verified backup.
+A non-zero exit status or `Integrity check: FAILED` means the archive is truncated/corrupt, is missing an expected application table, or contains runtime/cache data. Do not restore a failed archive.
+
+### Restore procedure
+
+Restore during a maintenance window. Stop application writers first, verify the archive, recreate an empty database, restore inside a single transaction, then restart and confirm readiness and recent records.
+
+```sh
+# 1. Stop writers so no new data lands during the restore.
+docker compose --env-file .env.production stop api migrate
+
+# 2. Verify the archive before touching the database.
+DATABASE_URL=... npm run backup:verify -- backups/tariffia-20260101T000000Z.dump
+
+# 3. Recreate an empty database.
+docker compose --env-file .env.production exec -T db dropdb -U tariffia --if-exists --force tariffia
+docker compose --env-file .env.production exec -T db createdb -U tariffia tariffia
+
+# 4. Restore the decrypted dump (single transaction; aborts cleanly on error).
+set -o pipefail
+age -d -i "$BACKUP_AGE_IDENTITY" backups/tariffia.dump.age \
+  | docker compose --env-file .env.production exec -T db \
+      pg_restore -U tariffia -d tariffia --clean --if-exists --no-owner --no-privileges --single-transaction
+
+# 5. Restart and verify.
+docker compose --env-file .env.production up -d
+curl --fail http://127.0.0.1:8080/ready
+```
+
+When running `npm run backup:restore` directly against a host `DATABASE_URL`, pass `--yes` after verifying the target, and in production set `RESTORE_CONFIRM` to the database name:
+
+```sh
+NODE_ENV=production RESTORE_CONFIRM=tariffia DATABASE_URL=... \
+  npm run backup:restore -- --yes backups/tariffia.dump
+```
+
+After restoring, confirm `/ready`, inspect API logs, and verify recent payments, credit accounts, webhook settings, and schema migration versions. Runtime/cache tables are intentionally empty after restore and repopulate on their own. Test restore procedures periodically; do not treat a successful dump command as a verified backup.
+
 
 ## Upgrades
 
