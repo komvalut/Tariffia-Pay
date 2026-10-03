@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tariffia Pay API reference</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: #0f1513; color: #e8efe9; }
+    header { padding: 22px 26px; border-bottom: 1px solid #263229; background: #131b17; position: sticky; top: 0; }
+    h1 { margin: 0 0 4px; font-size: 20px; }
+    header p { margin: 0; color: #9db0a4; font-size: 13px; }
+    main { padding: 20px 26px 60px; max-width: 1040px; }
+    section { margin-bottom: 26px; }
+    h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: #a9c3b4; border-bottom: 1px solid #263229; padding-bottom: 6px; }
+    details { border: 1px solid #263229; border-radius: 10px; margin: 8px 0; background: #131b17; }
+    summary { cursor: pointer; padding: 10px 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .method { font-weight: 700; font-size: 11px; letter-spacing: .04em; padding: 2px 7px; border-radius: 6px; background: #24402f; color: #b8ef79; }
+    .method.post, .method.patch, .method.put, .method.delete { background: #43301f; color: #ffc98a; }
+    .method.delete { background: #471f22; color: #ff9c9c; }
+    .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .body { padding: 4px 14px 14px; border-top: 1px solid #263229; color: #c7d6cc; }
+    .body h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #8fa79a; margin: 14px 0 4px; }
+    pre { background: #0b100e; border: 1px solid #263229; border-radius: 8px; padding: 10px; overflow: auto; font-size: 12px; }
+    .auth { color: #ffc98a; font-size: 12px; }
+    .muted { color: #8fa79a; }
+    .error { color: #ff9c9c; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Tariffia Pay API reference</h1>
+    <p>Minimal viewer for <a href="/openapi.json" style="color:#b8ef79">/openapi.json</a>. Credentials, private keys and provider secrets are never part of this documentation.</p>
+  </header>
+  <main id="main"><p class="muted">Loading the OpenAPI document…</p></main>
+  <script>
+    const METHOD_ORDER = ['get', 'post', 'put', 'patch', 'delete'];
+    async function load() {
+      const main = document.getElementById('main');
+      try {
+        const spec = await fetch('/openapi.json', { cache: 'no-store' }).then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.json();
+        });
+        const tagOrder = (spec.tags ?? []).map((tag) => tag.name);
+        const groups = new Map(tagOrder.map((name) => [name, []]));
+        for (const [path, operations] of Object.entries(spec.paths ?? {})) {
+          for (const method of METHOD_ORDER) {
+            const operation = operations[method];
+            if (!operation) continue;
+            const tag = (operation.tags ?? ['Other'])[0];
+            if (!groups.has(tag)) groups.set(tag, []);
+            groups.get(tag).push({ path, method, operation });
+          }
+        }
+        const sections = [...groups.entries()].filter(([, items]) => items.length).map(([tag, items]) => {
+          const rows = items.map(({ path, method, operation }) => {
+            const secured = Array.isArray(operation.security) && operation.security.length > 0;
+            const params = (operation.parameters ?? []).map((parameter) =>
+              `<li><code>${parameter.in}</code> <strong>${parameter.name}</strong>${parameter.required ? ' <span class="auth">required</span>' : ''}</li>`).join('');
+            const responses = Object.entries(operation.responses ?? {})
+              .map(([code, response]) => `<li><strong>${code}</strong> ${response.description ?? ''}</li>`).join('');
+            const body = operation.requestBody
+              ? `<h3>Request body</h3><pre>${JSON.stringify(operation.requestBody.content?.['application/json']?.schema ?? {}, null, 2)}</pre>`
+              : '';
+            return `<details><summary><span class="method ${method}">${method.toUpperCase()}</span><span class="path">${path}</span><span class="muted">${operation.summary ?? ''}</span>${secured ? '<span class="auth">merchant key</span>' : '<span class="muted">public</span>'}</summary>
+              <div class="body">${operation.description ? `<p>${operation.description}</p>` : ''}${params ? `<h3>Parameters</h3><ul>${params}</ul>` : ''}${body}<h3>Responses</h3><ul>${responses}</ul></div></details>`;
+          }).join('');
+          return `<section><h2>${tag}</h2>${rows}</section>`;
+        }).join('');
+        main.innerHTML = sections || '<p class="error">The OpenAPI document has no paths.</p>';
+      } catch (error) {
+        main.innerHTML = `<p class="error">Could not load the API documentation: ${String(error.message ?? error)}</p>`;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

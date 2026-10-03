@@ -20,6 +20,10 @@ docker compose up --build
 
 The API listens on `http://localhost:8080`. `GET /health` verifies API and database availability; `GET /ready` is the readiness probe. Compose applies migrations in a one-shot service before starting the API, which also checks migrations on startup.
 
+## API documentation
+
+`GET /openapi.json` serves a hand-written OpenAPI 3.0 description of the existing public and merchant API (authentication, orders, payments, payment links, transactions, customers, revenue, credits, AI, SMS/OTP, webhooks, subscriptions, settings, notification preferences, usage, merchant API keys, billing documents and public checkout/receipts), including request/response schemas, authentication requirements and common error responses. `GET /docs` serves a dependency-free viewer for that document. Both are read-only and document existing endpoints only; no credentials, private keys, provider secrets or merchant data are included. No Swagger UI package is added — the built-in viewer reuses the project's plain Fastify stack.
+
 For development without the API container:
 
 ```sh
