@@ -4,6 +4,7 @@ import { HttpError } from '../errors.js';
 import { requireMerchant, parseBody } from '../http.js';
 import { createApiKey, newId } from '../security.js';
 import { createApiKeySchema } from '../schemas.js';
+import { DEFAULT_MERCHANT_SCOPES } from '../scopes.js';
 import type { AuditLogService } from '../services/audit-log-service.js';
 
 export const apiKeyRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLogService }> = async (app, { db, auditLog }) => {
@@ -26,17 +27,18 @@ export const apiKeyRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLog
     const merchant = await requireMerchant(request, db);
     const body = parseBody(createApiKeySchema, request.body);
     const key = createApiKey();
+    const scopes = body.scopes ?? DEFAULT_MERCHANT_SCOPES;
     const result = await db.query(
-      `INSERT INTO api_keys (id, merchant_id, name, prefix, key_hash)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO api_keys (id, merchant_id, name, prefix, key_hash, scopes)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, name, prefix, scopes, created_at AS "createdAt"`,
-      [newId(), merchant.id, body.name, key.prefix, key.hash],
+      [newId(), merchant.id, body.name, key.prefix, key.hash, scopes],
     );
     // The plaintext secret is returned exactly once and is only ever stored as a pepper-hashed HMAC.
     await auditLog.record({
       actorType: 'merchant', actorId: merchant.id, action: 'api_key.create',
       resourceType: 'api_key', resourceId: result.rows[0]?.id as string,
-      metadata: { name: body.name, prefix: key.prefix },
+      metadata: { name: body.name, prefix: key.prefix, scopes },
     });
     return reply.code(201).send({ apiKey: result.rows[0], secret: key.raw, warning: 'Store this API key now. It will not be shown again.' });
   });

@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { createMerchantSchema } from '../schemas.js';
 import { createApiKey, newId } from '../security.js';
+import { DEFAULT_MERCHANT_SCOPES } from '../scopes.js';
 import { parseBody, requireAdmin } from '../http.js';
 
 export const merchantRoutes: FastifyPluginAsync<{ db: Database }> = async (app, { db }) => {
@@ -18,8 +19,8 @@ export const merchantRoutes: FastifyPluginAsync<{ db: Database }> = async (app, 
         [merchantId, body.name, body.email, body.walletAddress],
       );
       await client.query(
-        'INSERT INTO api_keys (id, merchant_id, name, prefix, key_hash) VALUES ($1, $2, $3, $4, $5)',
-        [apiKeyId, merchantId, body.apiKeyName, apiKey.prefix, apiKey.hash],
+        'INSERT INTO api_keys (id, merchant_id, name, prefix, key_hash, scopes) VALUES ($1, $2, $3, $4, $5, $6)',
+        [apiKeyId, merchantId, body.apiKeyName, apiKey.prefix, apiKey.hash, DEFAULT_MERCHANT_SCOPES],
       );
       return inserted.rows[0];
     });

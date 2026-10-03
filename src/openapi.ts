@@ -3,6 +3,8 @@
  * It documents current endpoints only and contains no credentials, example keys or private data.
  */
 
+import { MERCHANT_SCOPES } from './scopes.js';
+
 const errorSchema = {
   type: 'object',
   properties: {
@@ -15,6 +17,7 @@ const errorSchema = {
 const commonErrorResponses = {
   400: { $ref: '#/components/responses/BadRequest' },
   401: { $ref: '#/components/responses/Unauthorized' },
+  403: { $ref: '#/components/responses/Forbidden' },
   404: { $ref: '#/components/responses/NotFound' },
   409: { $ref: '#/components/responses/Conflict' },
   429: { $ref: '#/components/responses/RateLimited' },
@@ -183,8 +186,10 @@ export const openApiDocument = {
       '`Authorization: Bearer <key>`. The admin-only operational health summary uses the',
       '`x-admin-api-key` header; public checkout, receipt and health probes need no authentication.',
       'Apart from that single admin health endpoint, admin routes are intentionally not documented.',
-      'This description covers existing public and merchant endpoints only; it never exposes or',
-      'accepts secrets, private keys or provider credentials.',
+      'Merchant API keys carry scopes (`<area>:read` or `<area>:write`, where write implies read); a',
+      'key missing the scope required by a route receives `403 insufficient_scope`. Keys issued before',
+      'scope enforcement are grandfathered as full access. This description covers existing public and',
+      'merchant endpoints only; it never exposes or accepts secrets, private keys or provider credentials.',
     ].join('\n'),
   },
   servers: [{ url: '/', description: 'This Tariffia Pay instance' }],
@@ -759,7 +764,29 @@ export const openApiDocument = {
       get: { tags: ['API keys'], security: merchantSecurity, summary: 'List your API keys (no secrets or hashes)', responses: { 200: { description: 'API key metadata with status and last-used time.' }, ...commonErrorResponses } },
       post: {
         tags: ['API keys'], security: merchantSecurity, summary: 'Create an API key (secret returned once)',
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: { type: 'string', maxLength: 80 } } } } } },
+        description: 'Creates a scoped API key. When `scopes` is omitted the key receives the full default scope catalogue. The plaintext secret is returned only once.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name'],
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', maxLength: 80 },
+                  scopes: {
+                    type: 'array',
+                    minItems: 1,
+                    uniqueItems: true,
+                    items: { type: 'string', enum: [...MERCHANT_SCOPES] },
+                    description: 'Optional narrower scope set. Omit for the full default catalogue.',
+                  },
+                },
+              },
+            },
+          },
+        },
         responses: {
           201: {
             description: 'Key created. The plaintext secret is returned only in this response and only its hash is stored.',
@@ -884,7 +911,7 @@ export const openApiDocument = {
       merchantApiKey: {
         type: 'http',
         scheme: 'bearer',
-        description: 'Merchant API key sent as `Authorization: Bearer <key>`. Keys are created once via the merchant API or admin provisioning and stored only as hashes.',
+        description: 'Merchant API key sent as `Authorization: Bearer <key>`. Keys are created once via the merchant API or admin provisioning and stored only as hashes. Each key carries scopes such as `orders:read` or `payments:write`; write implies read, and a missing scope returns `403 insufficient_scope`.',
       },
       adminApiKey: {
         type: 'apiKey',
@@ -918,6 +945,7 @@ export const openApiDocument = {
     responses: {
       BadRequest: { description: 'Validation error or invalid filter.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       Unauthorized: { description: 'Missing or invalid credentials.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+      Forbidden: { description: 'The API key lacks the scope required by this route (`insufficient_scope`).', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       NotFound: { description: 'Resource not found or not owned by this merchant.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       Conflict: { description: 'Conflicting state or idempotency conflict.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
       Unprocessable: { description: 'Unprocessable request (for example an unsupported feature).', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },

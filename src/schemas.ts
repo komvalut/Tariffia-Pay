@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { aiProviderKinds } from './ai-provider.js';
 import { smsProviderKinds } from './sms-provider.js';
+import { MERCHANT_SCOPES } from './scopes.js';
 
 export const addressSchema = z.string()
   .regex(/^0x[0-9a-fA-F]{40}$/, 'Must be a valid EVM address')
@@ -23,7 +24,9 @@ export const createCustomerSchema = z.object({
 
 export const createApiKeySchema = z.object({
   name: z.string().trim().min(1).max(80),
-});
+  // Optional narrower scope set. Omitted means the key receives the full default scope catalogue.
+  scopes: z.array(z.enum(MERCHANT_SCOPES)).min(1).max(MERCHANT_SCOPES.length).optional(),
+}).strict();
 
 export const createOrderSchema = z.object({
   customerId: z.string().uuid().optional(),

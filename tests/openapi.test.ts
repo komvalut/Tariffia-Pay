@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from '../src/db.js';
 import { buildApp } from '../src/app.js';
 import { openApiDocument } from '../src/openapi.js';
+import { merchantScopeForRoute } from '../src/scopes.js';
 
 type ImplementedRoute = { method: string; serverPath: string; path: string };
 
@@ -217,6 +218,9 @@ describe('OpenAPI documentation', () => {
       // Every documented merchant operation must declare the merchant bearer scheme.
       expect(operation.security, `${route.method} ${route.path} must require the merchant API key`)
         .toEqual([{ merchantApiKey: [] }]);
+      // Every merchant route must map to an enforceable scope.
+      expect(merchantScopeForRoute(route.method, route.serverPath), `${route.method} ${route.serverPath} has no scope`)
+        .toBeDefined();
     }
     expect(missing, `Merchant routes missing from OpenAPI: ${missing.join(', ')}`).toEqual([]);
   });
