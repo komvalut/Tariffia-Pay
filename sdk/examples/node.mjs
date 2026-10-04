@@ -26,6 +26,27 @@ try {
   const models = await client.getAiModels();
   console.log('Enabled models/prices:', models.models);
 
+  // Merchant self-service reads (paginated lists return { items, pagination }).
+  const customers = await client.getCustomers({ limit: 10 });
+  console.log('First page of customers:', customers.customers.length, 'more:', customers.pagination.hasMore);
+  const orders = await client.getOrders({ status: 'PENDING', limit: 10 });
+  console.log('Pending orders:', orders.orders.length);
+  const revenue = await client.getRevenueSummary();
+  console.log('Confirmed revenue:', revenue.revenue.totalConfirmed, revenue.revenue.currency);
+  const usageSummary = await client.getUsage();
+  console.log('General API requests this window:', usageSummary.usage.general.used);
+
+  // Authentication, usage and display preferences.
+  const settings = await client.getSettings();
+  console.log('Settings:', settings.settings.displayName, settings.settings.timezone);
+  const audit = await client.getAuditLog({ limit: 5 });
+  console.log('Recent activity:', audit.entries.map((entry) => entry.action));
+
+  // Create a scoped API key; the plaintext secret is returned exactly once.
+  const created = await client.createApiKey({ name: 'integration-example', scopes: ['payments:write'] });
+  console.log('Created key', created.apiKey.id, 'with scopes', created.apiKey.scopes, '(secret shown once, store securely)');
+  await client.revokeApiKey(created.apiKey.id);
+
   // Report real token counts collected by your existing provider integration.
   const usage = await client.recordAiUsage({
     requestId: `ai-request-${randomUUID()}`,

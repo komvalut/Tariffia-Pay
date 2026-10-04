@@ -190,6 +190,271 @@ export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'EXPIRED' |
 export type SubscriptionBillingMode = 'MANUAL' | 'AUTOMATIC';
 export type BillingInterval = 'DAY' | 'WEEK' | 'MONTH' | 'YEAR';
 
+/** Shared pagination metadata returned by every paginated list endpoint (API default limit 50, max 100). */
+export interface Pagination {
+  limit: number;
+  offset: number;
+  count: number;
+  hasMore: boolean;
+}
+
+/** Shared query parameters for paginated list methods. */
+export interface PaginationOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export interface Customer {
+  id: string;
+  externalId: string | null;
+  email: string | null;
+  name: string | null;
+  metadata: Record<string, unknown>;
+  orderCount?: number;
+  paymentCount?: number;
+  createdAt: string;
+}
+
+export interface CreateCustomerInput {
+  externalId?: string;
+  email?: string;
+  name?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface OrderDetail {
+  id: string;
+  customerId: string | null;
+  reference: string | null;
+  description: string;
+  amount: string;
+  currency: string;
+  status: OrderStatus;
+  statusLabel?: string;
+  paymentId?: string | null;
+  paymentStatus?: PaymentStatus | null;
+  paymentStatusLabel?: string | null;
+  network?: string | null;
+  transactionId?: string | null;
+  detectedAt?: string | null;
+  confirmedAt?: string | null;
+  expiresAt?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface Transaction {
+  paymentId: string;
+  orderId: string;
+  description: string;
+  amount: string;
+  currency: string;
+  status: PaymentStatus;
+  statusLabel: string;
+  network: string;
+  adapter: string;
+  transactionId: string | null;
+  transactionHash: string | null;
+  detectedAt: string | null;
+  confirmedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export interface PaymentDetailsResult {
+  payment: {
+    id: string;
+    orderId: string;
+    amount: string;
+    amountBaseUnits: string;
+    currency: string;
+    status: PaymentStatus;
+    statusLabel: string;
+    paymentMethod: { id: string; name: string };
+    network: string;
+    recipientAddress: string;
+    tokenAddress: string | null;
+    transactionId: string | null;
+    transactionHash: string | null;
+    detectedAt: string | null;
+    confirmedAt: string | null;
+    expiresAt: string | null;
+    createdAt: string;
+  };
+  order: {
+    id: string;
+    reference: string | null;
+    description: string;
+    amount: string;
+    currency: string;
+    status: OrderStatus;
+    customerId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  invoice: Invoice | null;
+  receipt: Receipt | null;
+}
+
+export interface PaymentLink {
+  id: string;
+  orderId: string;
+  reference: string | null;
+  description: string;
+  amount: string;
+  currency: string;
+  status: PaymentStatus;
+  transactionHash: string | null;
+  enabled: boolean;
+  disabledAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  checkoutUrl: string;
+  qrUrl: string;
+}
+
+export interface RevenueSummary {
+  currency: string | null;
+  totalConfirmed: string | null;
+  confirmedPaymentCount: number;
+  pendingPaymentCount: number;
+  failedPaymentCount: number;
+  expiredPaymentCount: number;
+  totalsByCurrency: Record<string, string>;
+  from: string | null;
+  to: string | null;
+}
+
+export interface RevenueHistoryEntry {
+  date: string;
+  currency: string;
+  confirmedAmount: string;
+  confirmedPaymentCount: number;
+}
+
+export interface RevenueHistoryResult {
+  history: RevenueHistoryEntry[];
+  from: string | null;
+  to: string | null;
+  currency: string | null;
+}
+
+export type MerchantUsageCategory = 'general' | 'ai' | 'sms';
+
+export interface MerchantUsageCategorySummary {
+  used: number;
+  limit: number | null;
+  unlimited: boolean;
+  remaining: number | null;
+  windowStart: string;
+  windowResetAt: string;
+}
+
+export type MerchantUsageSummary = Record<MerchantUsageCategory, MerchantUsageCategorySummary>;
+
+export interface MerchantSettings {
+  merchantId: string;
+  displayName: string | null;
+  supportEmail: string | null;
+  defaultCurrency: string;
+  timezone: string;
+  updatedAt: string | null;
+}
+
+export interface UpdateMerchantSettingsInput {
+  displayName?: string | null;
+  supportEmail?: string | null;
+  defaultCurrency?: string | null;
+  timezone?: string | null;
+}
+
+export interface NotificationPreferences {
+  paymentConfirmed: boolean;
+  paymentFailed: boolean;
+  paymentExpired: boolean;
+  creditTopup: boolean;
+  aiRequestFailed: boolean;
+  smsRequestFailed: boolean;
+  webhookFailed: boolean;
+  updatedAt: string | null;
+}
+
+export type UpdateNotificationPreferencesInput = Omit<NotificationPreferences, 'updatedAt'>;
+
+export type ApiKeyStatus = 'active' | 'revoked';
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  status: ApiKeyStatus;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface CreatedApiKey {
+  apiKey: ApiKey;
+  /** Returned exactly once by the API; store it securely and never log it. */
+  secret: string;
+  warning: string;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  eventId: string;
+  event: string;
+  status: 'QUEUED' | 'DELIVERING' | 'RETRYING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  attempts: number;
+  nextAttemptAt: string | null;
+  lastHttpStatus: number | null;
+  lastError: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  actorType: 'merchant' | 'admin';
+  actorId: string;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type DashboardCollection =
+  | 'customers'
+  | 'orders'
+  | 'payments'
+  | 'payment-links'
+  | 'credit-accounts'
+  | 'credit-transactions'
+  | 'topups'
+  | 'usage'
+  | 'webhook-endpoints'
+  | 'webhook-deliveries';
+
+export interface DashboardOverview {
+  customers: number;
+  orders: number;
+  pending_payments: number;
+  failed_or_expired_payments: number;
+  usdc_received: string;
+  credit_accounts: number;
+  credit_balance_units: string;
+  ai_requests: number;
+  ai_usage_cost_usd: string;
+  failed_webhook_deliveries: number;
+}
+
+export interface DashboardCollectionQuery extends PaginationOptions {
+  q?: string;
+  status?: string;
+}
+
 export interface TariffiaClientOptions {
   /** Merchant API key. Keep this server-side and load it from a secret store or environment. */
   apiKey: string;
@@ -561,6 +826,129 @@ export class TariffiaClient {
     return this.request('/v1/payment-links', 'POST', input, options, options.idempotencyKey);
   }
 
+  // --- Customers -----------------------------------------------------------
+
+  getCustomers(query: PaginationOptions = {}, options: RequestOptions = {}): Promise<{ customers: Customer[]; pagination: Pagination }> {
+    return this.request(`/v1/customers${this.paginationQuery(query)}`, 'GET', undefined, options);
+  }
+
+  getCustomer(customerId: string, options: RequestOptions = {}): Promise<{ customer: Customer }> {
+    return this.request(`/v1/customers/${encodeURIComponent(customerId)}`, 'GET', undefined, options);
+  }
+
+  /** Idempotent create/update. Repeating the same email/externalId returns the existing customer. */
+  createCustomer(input: CreateCustomerInput, options: RequestOptions = {}): Promise<{ customer: Customer }> {
+    return this.request('/v1/customers', 'POST', input, options);
+  }
+
+  // --- Orders and payments -------------------------------------------------
+
+  getOrders(query: { status?: OrderStatus } & PaginationOptions = {}, options: RequestOptions = {}): Promise<{ orders: OrderDetail[]; pagination: Pagination }> {
+    return this.request(`/v1/orders${this.query({ status: query.status, ...query })}`, 'GET', undefined, options);
+  }
+
+  getOrder(orderId: string, options: RequestOptions = {}): Promise<{ order: OrderDetail }> {
+    return this.request(`/v1/orders/${encodeURIComponent(orderId)}`, 'GET', undefined, options);
+  }
+
+  getTransactions(query: { status?: PaymentStatus; network?: string } & PaginationOptions = {}, options: RequestOptions = {}): Promise<{ transactions: Transaction[]; pagination: Pagination }> {
+    return this.request(`/v1/transactions${this.query(query)}`, 'GET', undefined, options);
+  }
+
+  getTransaction(paymentId: string, options: RequestOptions = {}): Promise<{ transaction: Transaction }> {
+    return this.request(`/v1/transactions/${encodeURIComponent(paymentId)}`, 'GET', undefined, options);
+  }
+
+  getPaymentDetails(paymentId: string, options: RequestOptions = {}): Promise<PaymentDetailsResult> {
+    return this.request(`/v1/payments/${encodeURIComponent(paymentId)}/details`, 'GET', undefined, options);
+  }
+
+  // --- Payment links -------------------------------------------------------
+
+  getPaymentLinks(query: PaginationOptions = {}, options: RequestOptions = {}): Promise<{ paymentLinks: PaymentLink[]; pagination: Pagination }> {
+    return this.request(`/v1/payment-links${this.paginationQuery(query)}`, 'GET', undefined, options);
+  }
+
+  getPaymentLink(paymentId: string, options: RequestOptions = {}): Promise<{ paymentLink: PaymentLink }> {
+    return this.request(`/v1/payment-links/${encodeURIComponent(paymentId)}`, 'GET', undefined, options);
+  }
+
+  /** Enables or disables a hosted payment link. Does not affect the underlying payment record. */
+  updatePaymentLink(paymentId: string, input: { enabled: boolean }, options: RequestOptions = {}): Promise<{ paymentLink: PaymentLink }> {
+    return this.request(`/v1/payment-links/${encodeURIComponent(paymentId)}`, 'PATCH', input, options);
+  }
+
+  async deletePaymentLink(paymentId: string, options: RequestOptions = {}): Promise<void> {
+    await this.request<undefined>(`/v1/payment-links/${encodeURIComponent(paymentId)}`, 'DELETE', undefined, options);
+  }
+
+  // --- Revenue -------------------------------------------------------------
+
+  getRevenueSummary(query: { from?: string; to?: string } = {}, options: RequestOptions = {}): Promise<{ revenue: RevenueSummary }> {
+    return this.request(`/v1/revenue/summary${this.query(query)}`, 'GET', undefined, options);
+  }
+
+  getRevenueHistory(query: { from?: string; to?: string; currency?: string } = {}, options: RequestOptions = {}): Promise<RevenueHistoryResult> {
+    return this.request(`/v1/revenue/history${this.query(query)}`, 'GET', undefined, options);
+  }
+
+  // --- Usage, settings and notifications -----------------------------------
+
+  getUsage(options: RequestOptions = {}): Promise<{ usage: MerchantUsageSummary }> {
+    return this.request('/v1/usage', 'GET', undefined, options);
+  }
+
+  getSettings(options: RequestOptions = {}): Promise<{ settings: MerchantSettings }> {
+    return this.request('/v1/settings', 'GET', undefined, options);
+  }
+
+  updateSettings(input: UpdateMerchantSettingsInput, options: RequestOptions = {}): Promise<{ settings: MerchantSettings }> {
+    return this.request('/v1/settings', 'PUT', input, options);
+  }
+
+  getNotificationPreferences(options: RequestOptions = {}): Promise<{ preferences: NotificationPreferences }> {
+    return this.request('/v1/notification-preferences', 'GET', undefined, options);
+  }
+
+  updateNotificationPreferences(input: UpdateNotificationPreferencesInput, options: RequestOptions = {}): Promise<{ preferences: NotificationPreferences }> {
+    return this.request('/v1/notification-preferences', 'PUT', input, options);
+  }
+
+  // --- API keys ------------------------------------------------------------
+
+  getApiKeys(options: RequestOptions = {}): Promise<{ apiKeys: ApiKey[] }> {
+    return this.request('/v1/api-keys', 'GET', undefined, options);
+  }
+
+  /** The plaintext secret is returned only in this response; never store or log it beyond the response. */
+  createApiKey(input: { name: string; scopes?: string[] }, options: RequestOptions = {}): Promise<CreatedApiKey> {
+    return this.request('/v1/api-keys', 'POST', input, options);
+  }
+
+  async revokeApiKey(keyId: string, options: RequestOptions = {}): Promise<void> {
+    await this.request<undefined>(`/v1/api-keys/${encodeURIComponent(keyId)}`, 'DELETE', undefined, options);
+  }
+
+  // --- Audit log -----------------------------------------------------------
+
+  getAuditLog(query: PaginationOptions = {}, options: RequestOptions = {}): Promise<{ entries: AuditEntry[]; pagination: Pagination }> {
+    return this.request(`/v1/audit-log${this.paginationQuery(query)}`, 'GET', undefined, options);
+  }
+
+  // --- Dashboard -----------------------------------------------------------
+
+  getDashboardOverview(options: RequestOptions = {}): Promise<{ overview: DashboardOverview }> {
+    return this.request('/v1/dashboard/overview', 'GET', undefined, options);
+  }
+
+  getDashboardCollection(
+    collection: DashboardCollection,
+    query: DashboardCollectionQuery = {},
+    options: RequestOptions = {},
+  ): Promise<{ items: Array<Record<string, unknown>>; pagination: Pagination }> {
+    return this.request(`/v1/dashboard/${encodeURIComponent(collection)}${this.query(query)}`, 'GET', undefined, options);
+  }
+
   getPaymentMethods(options: RequestOptions = {}): Promise<{ methods: PaymentMethodOption[] }> {
     return this.request('/v1/public/payment-methods', 'GET', undefined, options);
   }
@@ -668,8 +1056,8 @@ export class TariffiaClient {
     return this.request('/v1/sms/otp', 'POST', input, options);
   }
 
-  getInvoices(limit = 50, options: RequestOptions = {}): Promise<{ invoices: Invoice[] }> {
-    return this.request(`/v1/invoices?limit=${encodeURIComponent(String(limit))}`, 'GET', undefined, options);
+  getInvoices(query: PaginationOptions = {}, options: RequestOptions = {}): Promise<{ invoices: Invoice[]; pagination: Pagination }> {
+    return this.request(`/v1/invoices${this.paginationQuery(query)}`, 'GET', undefined, options);
   }
 
   getInvoice(invoiceIdOrNumber: string, options: RequestOptions = {}): Promise<{ invoice: Invoice }> {
@@ -680,8 +1068,8 @@ export class TariffiaClient {
     return this.requestPdf(`/v1/invoices/${encodeURIComponent(invoiceIdOrNumber)}.pdf`, options);
   }
 
-  getReceipts(limit = 50, options: RequestOptions = {}): Promise<{ receipts: Receipt[] }> {
-    return this.request(`/v1/receipts?limit=${encodeURIComponent(String(limit))}`, 'GET', undefined, options);
+  getReceipts(query: PaginationOptions = {}, options: RequestOptions = {}): Promise<{ receipts: Receipt[]; pagination: Pagination }> {
+    return this.request(`/v1/receipts${this.paginationQuery(query)}`, 'GET', undefined, options);
   }
 
   getReceipt(receiptIdOrInvoiceNumber: string, options: RequestOptions = {}): Promise<{ receipt: Receipt }> {
@@ -712,8 +1100,8 @@ export class TariffiaClient {
     return this.request('/v1/webhooks', 'POST', input, options);
   }
 
-  getWebhookEndpoints(options: RequestOptions = {}): Promise<{ endpoints: WebhookEndpoint[] }> {
-    return this.request('/v1/webhooks', 'GET', undefined, options);
+  getWebhookEndpoints(query: PaginationOptions = {}, options: RequestOptions = {}): Promise<{ endpoints: WebhookEndpoint[]; pagination: Pagination }> {
+    return this.request(`/v1/webhooks${this.paginationQuery(query)}`, 'GET', undefined, options);
   }
 
   updateWebhookEndpoint(endpointId: string, input: UpdateWebhookEndpointInput, options: RequestOptions = {}): Promise<{ endpoint: WebhookEndpoint }> {
@@ -722,6 +1110,10 @@ export class TariffiaClient {
 
   async deleteWebhookEndpoint(endpointId: string, options: RequestOptions = {}): Promise<void> {
     await this.request<undefined>(`/v1/webhooks/${encodeURIComponent(endpointId)}`, 'DELETE', undefined, options);
+  }
+
+  getWebhookDeliveries(endpointId: string, query: PaginationOptions = {}, options: RequestOptions = {}): Promise<{ deliveries: WebhookDelivery[]; pagination: Pagination }> {
+    return this.request(`/v1/webhooks/${encodeURIComponent(endpointId)}/deliveries${this.paginationQuery(query)}`, 'GET', undefined, options);
   }
 
   getCustomerCreditBalance(customerId: string, options: RequestOptions = {}): Promise<CreditBalance> {
@@ -738,6 +1130,21 @@ export class TariffiaClient {
 
   getAiModels(options: RequestOptions = {}): Promise<{ models: AiModelPricing[] }> {
     return this.request('/v1/ai/models', 'GET', undefined, options);
+  }
+
+  private paginationQuery(query: PaginationOptions): string {
+    return this.query({ limit: query.limit, offset: query.offset });
+  }
+
+  /** Builds an encoded query string, omitting undefined/null/empty values. */
+  private query(params: object): string {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
+      if (value === undefined || value === null || value === '') continue;
+      search.set(key, String(value));
+    }
+    const text = search.toString();
+    return text ? `?${text}` : '';
   }
 
   private async request<T>(

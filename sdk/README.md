@@ -38,23 +38,118 @@ try {
 
 ### Methods
 
+Orders, payments and links:
+
 - `createOrder(input, { idempotencyKey, signal? })`
 - `createPaymentLink(input, { idempotencyKey, signal? })`
+- `getOrders({ status?, limit?, offset?, signal? })`
+- `getOrder(orderId, { signal? })`
 - `getPaymentStatus(paymentId, { signal? })`
+- `getPaymentDetails(paymentId, { signal? })`
 - `verifyPayment(paymentId, transactionHash, { signal? })`
+- `getTransactions({ status?, network?, limit?, offset?, signal? })`
+- `getTransaction(paymentId, { signal? })`
+- `getPaymentLinks({ limit?, offset?, signal? })`
+- `getPaymentLink(paymentId, { signal? })`
+- `updatePaymentLink(paymentId, { enabled }, { signal? })`
+- `deletePaymentLink(paymentId, { signal? })`
+
+Customers:
+
+- `getCustomers({ limit?, offset?, signal? })`
+- `getCustomer(customerId, { signal? })`
+- `createCustomer(input, { signal? })`
+
+Revenue, usage, settings and notifications:
+
+- `getRevenueSummary({ from?, to?, signal? })`
+- `getRevenueHistory({ from?, to?, currency?, signal? })`
+- `getUsage({ signal? })`
+- `getSettings({ signal? })`
+- `updateSettings(input, { signal? })`
+- `getNotificationPreferences({ signal? })`
+- `updateNotificationPreferences(input, { signal? })`
+
+API keys, webhooks, audit log and dashboard:
+
+- `getApiKeys({ signal? })`
+- `createApiKey({ name, scopes? }, { signal? })`
+- `revokeApiKey(keyId, { signal? })`
 - `createWebhookEndpoint(input, { signal? })`
-- `getWebhookEndpoints({ signal? })`
+- `getWebhookEndpoints({ limit?, offset?, signal? })`
 - `updateWebhookEndpoint(endpointId, input, { signal? })`
 - `deleteWebhookEndpoint(endpointId, { signal? })`
+- `getWebhookDeliveries(endpointId, { limit?, offset?, signal? })`
+- `getAuditLog({ limit?, offset?, signal? })`
+- `getDashboardOverview({ signal? })`
+- `getDashboardCollection(collection, { q?, status?, limit?, offset?, signal? })`
+
+Credits, AI, SMS, subscriptions, billing documents and signatures:
+
 - `getCustomerCreditBalance(customerId, { signal? })`
 - `createCreditTopup({ customerId, amount }, { idempotencyKey, signal? })`
 - `getAiModels({ signal? })`
 - `recordAiUsage(input, { signal? })`
+- `createChatCompletion(input, { signal? })`
+- `streamChatCompletion(input, { signal? })`
+- `getSmsServices({ signal? })`
+- `sendSms(input, { signal? })`
+- `sendOtp(input, { signal? })`
+- `createSubscriptionPlan(input, { signal? })`
+- `getSubscriptionPlans({ signal? })`
+- `updateSubscriptionPlan(planId, input, { signal? })`
+- `createSubscription(input, { idempotencyKey, signal? })`
+- `getSubscriptions({ signal? })`
+- `getSubscription(subscriptionId, { signal? })`
+- `updateSubscription(subscriptionId, action, { signal? })`
+- `renewSubscription(subscriptionId, { idempotencyKey, signal? })`
+- `getSubscriptionBillingCycles(subscriptionId, { signal? })`
+- `getCustomerSubscriptions(customerId, { signal? })`
+- `getInvoices({ limit?, offset?, signal? })`
+- `getInvoice(invoiceIdOrNumber, { signal? })`
+- `getInvoicePdf(invoiceIdOrNumber, { signal? })`
+- `getReceipts({ limit?, offset?, signal? })`
+- `getReceipt(receiptIdOrInvoiceNumber, { signal? })`
+- `getReceiptPdf(receiptIdOrInvoiceNumber, { signal? })`
+- `getPublicReceipt(publicId, { signal? })`
+- `getPublicReceiptPdf(publicId, { signal? })`
 - `verifyWebhookSignature(input)`
 
-The SDK forwards `Idempotency-Key` for orders, payment links, and credit top-ups. Tariffia persists those idempotency decisions. AI usage uses its required `requestId` as the idempotency key; retry the same logical usage with the same request ID and payload.
+The SDK forwards `Idempotency-Key` for orders, payment links, credit top-ups, subscriptions and manual renewals. Tariffia persists those idempotency decisions. AI usage uses its required `requestId` as the idempotency key; retry the same logical usage with the same request ID and payload.
 
 `TariffiaApiError` exposes `statusCode`, `code`, `message`, and the parsed `responseBody`. Network failures and aborts are returned as the underlying Fetch errors. The response interfaces follow the current API; optional fields mirror fields that are optional in the API response.
+
+### Pagination
+
+Every paginated list method accepts `{ limit?, offset? }` and returns the resource array plus a `pagination` object `{ limit, offset, count, hasMore }`, matching the server contract (default `limit` 50, maximum 100; invalid values produce an `invalid_pagination` error from the API, surfaced as `TariffiaApiError`).
+
+```ts
+const page = await tariffia.getCustomers({ limit: 25, offset: 50 });
+console.log(page.customers.length, page.pagination.hasMore);
+```
+
+### Customers, orders, transactions and links
+
+```ts
+await tariffia.createCustomer({ email: 'buyer@example.com', name: 'Buyer', metadata: { tier: 'gold' } });
+const { customers } = await tariffia.getCustomers({ limit: 10 });
+const { orders } = await tariffia.getOrders({ status: 'PENDING' });
+const { transactions } = await tariffia.getTransactions({ network: 'base' });
+const details = await tariffia.getPaymentDetails(transactions[0]!.paymentId);
+await tariffia.updatePaymentLink(details.payment.id, { enabled: false });
+```
+
+### API keys
+
+`createApiKey` returns the plaintext secret exactly once (in `secret`) and never stores it on the client. Persist it in a server-side secret store and never log or bundle it:
+
+```ts
+const created = await tariffia.createApiKey({ name: 'CI', scopes: ['payments:write'] });
+// created.secret is shown once; store it securely.
+await tariffia.revokeApiKey(created.apiKey.id);
+```
+
+The SDK does not expose admin-only endpoints (`/v1/admin/*`). Those remain operator-only.
 
 ## Browser-Safe Checkout
 
@@ -154,4 +249,4 @@ Merchant responses expose the configured customer charge, not provider cost or p
 
 ## API Compatibility
 
-The SDK uses the current `/v1` endpoints and adds no server routes or payment logic. It does not change API-key authentication, payment adapters, order/payment records, credit balances, ledger entries, or pricing behavior. New payment methods and provider integrations are not included.
+The SDK uses the current `/v1` endpoints and adds no server routes or payment logic. It covers merchant-facing functionality only (customers, orders, payments, transactions, payment links, revenue, usage, settings, notifications, API keys, webhooks, audit log and the merchant dashboard); admin-only endpoints under `/v1/admin/*` are intentionally excluded. It does not change API-key authentication or scopes, payment adapters, order/payment records, credit balances, ledger entries, or pricing behavior. New payment methods and provider integrations are not included.

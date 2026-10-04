@@ -181,4 +181,135 @@ describe('Tariffia TypeScript SDK', () => {
     expect(() => openCheckout('javascript:alert(1)', { assign: () => undefined })).toThrow(/hosted checkout/);
     expect(() => openCheckout('https://pay.example/account', { assign: () => undefined })).toThrow(/hosted checkout/);
   });
+
+  const pagination = { limit: 50, offset: 0, count: 1, hasMore: false };
+
+  it('covers customers, orders, transactions and payment details with typed responses', async () => {
+    const { calls, fetcher } = fakeFetch([
+      jsonResponse({ customers: [{ id: 'cust-1', email: 'buyer@example.com', externalId: 'c-1' }], pagination }),
+      jsonResponse({ customer: { id: 'cust-1', email: 'buyer@example.com', orderCount: 2, paymentCount: 2 } }),
+      jsonResponse({ customer: { id: 'cust-1', email: 'buyer@example.com', externalId: 'c-1' } }, 201),
+      jsonResponse({ orders: [{ id: 'order-1', status: 'PENDING', statusLabel: 'Pending' }], pagination }),
+      jsonResponse({ order: { id: 'order-1', paymentId: 'pay-1', paymentStatus: 'CONFIRMED' } }),
+      jsonResponse({ transactions: [{ paymentId: 'pay-1', statusLabel: 'Confirmed' }], pagination }),
+      jsonResponse({ transaction: { paymentId: 'pay-1', transactionHash: `0x${'b'.repeat(64)}` } }),
+      jsonResponse({ payment: { id: 'pay-1', status: 'CONFIRMED' }, order: { id: 'order-1' }, invoice: null, receipt: null }),
+    ]);
+    const client = new TariffiaClient({ apiKey: 'merchant-secret', baseUrl: 'https://pay.example', fetch: fetcher });
+
+    expect((await client.getCustomers({ limit: 10, offset: 20 })).customers[0]?.id).toBe('cust-1');
+    expect((await client.getCustomer('cust-1')).customer.orderCount).toBe(2);
+    await client.createCustomer({ email: 'buyer@example.com', name: 'Buyer', metadata: { tier: 'gold' } });
+    expect((await client.getOrders({ status: 'PENDING', limit: 5 })).orders[0]?.statusLabel).toBe('Pending');
+    expect((await client.getOrder('order-1')).order.paymentStatus).toBe('CONFIRMED');
+    expect((await client.getTransactions({ status: 'CONFIRMED', network: 'base' })).transactions[0]?.statusLabel).toBe('Confirmed');
+    expect((await client.getTransaction('pay-1')).transaction.transactionHash).toBe(`0x${'b'.repeat(64)}`);
+    expect((await client.getPaymentDetails('pay-1')).payment.status).toBe('CONFIRMED');
+
+    expect(calls.map(({ url }) => `${new URL(url).pathname}${new URL(url).search}`)).toEqual([
+      '/v1/customers?limit=10&offset=20', '/v1/customers/cust-1', '/v1/customers',
+      '/v1/orders?status=PENDING&limit=5', '/v1/orders/order-1',
+      '/v1/transactions?status=CONFIRMED&network=base', '/v1/transactions/pay-1', '/v1/payments/pay-1/details',
+    ]);
+    expect(JSON.parse(String(calls[2].init?.body))).toMatchObject({ email: 'buyer@example.com', metadata: { tier: 'gold' } });
+  });
+
+  it('covers payment link management, revenue, usage, settings and notifications', async () => {
+    const { calls, fetcher } = fakeFetch([
+      jsonResponse({ paymentLinks: [{ id: 'pay-1', enabled: true }], pagination }),
+      jsonResponse({ paymentLink: { id: 'pay-1', enabled: true } }),
+      jsonResponse({ paymentLink: { id: 'pay-1', enabled: false } }),
+      new Response(null, { status: 204 }),
+      jsonResponse({ revenue: { currency: 'USDC', totalConfirmed: '4.500000', confirmedPaymentCount: 1, pendingPaymentCount: 0, failedPaymentCount: 0, expiredPaymentCount: 0, totalsByCurrency: { USDC: '4.500000' } } }),
+      jsonResponse({ history: [{ date: '2026-01-01', currency: 'USDC', confirmedAmount: '4.500000', confirmedPaymentCount: 1 }], from: null, to: null, currency: 'USDC' }),
+      jsonResponse({ usage: { general: { used: 12, limit: 300, unlimited: false, remaining: 288 }, ai: { used: 0, limit: null, unlimited: true, remaining: null }, sms: { used: 1, limit: 60, unlimited: false, remaining: 59 } } }),
+      jsonResponse({ settings: { merchantId: 'm-1', displayName: 'Store', defaultCurrency: 'USDC', timezone: 'UTC' } }),
+      jsonResponse({ settings: { merchantId: 'm-1', displayName: 'New', defaultCurrency: 'USDC', timezone: 'UTC' } }),
+      jsonResponse({ preferences: { paymentConfirmed: true, paymentFailed: false, paymentExpired: true, creditTopup: true, aiRequestFailed: true, smsRequestFailed: false, webhookFailed: true } }),
+      jsonResponse({ preferences: { paymentConfirmed: true, paymentFailed: true, paymentExpired: true, creditTopup: true, aiRequestFailed: true, smsRequestFailed: true, webhookFailed: true } }),
+    ]);
+    const client = new TariffiaClient({ apiKey: 'merchant-secret', baseUrl: 'https://pay.example', fetch: fetcher });
+
+    expect((await client.getPaymentLinks({ limit: 25 })).paymentLinks[0]?.id).toBe('pay-1');
+    expect((await client.getPaymentLink('pay-1')).paymentLink.enabled).toBe(true);
+    expect((await client.updatePaymentLink('pay-1', { enabled: false })).paymentLink.enabled).toBe(false);
+    await client.deletePaymentLink('pay-1');
+    expect((await client.getRevenueSummary({ from: '2026-01-01' })).revenue.totalConfirmed).toBe('4.500000');
+    expect((await client.getRevenueHistory({ currency: 'USDC' })).history[0]?.confirmedPaymentCount).toBe(1);
+    expect((await client.getUsage()).usage.general.used).toBe(12);
+    expect((await client.getSettings()).settings.displayName).toBe('Store');
+    await client.updateSettings({ displayName: 'New' });
+    expect((await client.getNotificationPreferences()).preferences.paymentFailed).toBe(false);
+    await client.updateNotificationPreferences({ paymentConfirmed: true, paymentFailed: true, paymentExpired: true, creditTopup: true, aiRequestFailed: true, smsRequestFailed: true, webhookFailed: true });
+
+    expect(calls.map(({ url }) => `${new URL(url).pathname}${new URL(url).search}`)).toEqual([
+      '/v1/payment-links?limit=25', '/v1/payment-links/pay-1', '/v1/payment-links/pay-1', '/v1/payment-links/pay-1',
+      '/v1/revenue/summary?from=2026-01-01', '/v1/revenue/history?currency=USDC',
+      '/v1/usage', '/v1/settings', '/v1/settings', '/v1/notification-preferences', '/v1/notification-preferences',
+    ]);
+    expect(calls[2].init?.method).toBe('PATCH');
+    expect(calls[3].init?.method).toBe('DELETE');
+    expect(calls[8].init?.method).toBe('PUT');
+  });
+
+  it('covers API keys without leaking the one-time secret, audit log and dashboard', async () => {
+    const oneTimeSecret = 'tf_live_super_secret_value_returned_once';
+    const { calls, fetcher } = fakeFetch([
+      jsonResponse({ apiKeys: [{ id: 'key-1', name: 'Primary', prefix: 'tf_live_abc', scopes: ['orders:read'], status: 'active' }] }),
+      jsonResponse({ apiKey: { id: 'key-2', name: 'CI', prefix: 'tf_live_def', scopes: ['payments:write'], status: 'active' }, secret: oneTimeSecret, warning: 'Store this API key now.' }, 201),
+      new Response(null, { status: 204 }),
+      jsonResponse({ entries: [{ id: 'audit-1', action: 'settings.update', actorType: 'merchant' }], pagination }),
+      jsonResponse({ overview: { customers: 3, orders: 5, usdc_received: '9.000000' } }),
+      jsonResponse({ items: [{ id: 'cust-1' }], pagination }),
+    ]);
+    const client = new TariffiaClient({ apiKey: 'merchant-secret', baseUrl: 'https://pay.example', fetch: fetcher });
+
+    const keys = await client.getApiKeys();
+    expect(keys.apiKeys[0]?.status).toBe('active');
+    const created = await client.createApiKey({ name: 'CI', scopes: ['payments:write'] });
+    // The secret is exposed exactly on the create response, never stored on the client.
+    expect(created.secret).toBe(oneTimeSecret);
+    expect(created.apiKey.scopes).toEqual(['payments:write']);
+    expect(JSON.stringify(keys)).not.toContain(oneTimeSecret);
+    expect('apiKey' in client).toBe(false);
+    await client.revokeApiKey('key-2');
+    expect((await client.getAuditLog({ limit: 20 })).entries[0]?.action).toBe('settings.update');
+    expect((await client.getDashboardOverview()).overview.customers).toBe(3);
+    expect((await client.getDashboardCollection('customers', { limit: 10, status: 'active' })).items).toHaveLength(1);
+
+    expect(calls.map(({ url }) => `${new URL(url).pathname}${new URL(url).search}`)).toEqual([
+      '/v1/api-keys', '/v1/api-keys', '/v1/api-keys/key-2', '/v1/audit-log?limit=20',
+      '/v1/dashboard/overview', '/v1/dashboard/customers?limit=10&status=active',
+    ]);
+    expect(calls[2].init?.method).toBe('DELETE');
+    expect(new Headers(calls[1].init?.headers).get('authorization')).toBe('Bearer merchant-secret');
+  });
+
+  it('exposes pagination metadata and delivery history for webhooks', async () => {
+    const { calls, fetcher } = fakeFetch([
+      jsonResponse({ endpoints: [{ id: 'hook-1' }], pagination: { limit: 10, offset: 0, count: 1, hasMore: true } }),
+      jsonResponse({ deliveries: [{ id: 'del-1', status: 'FAILED' }], pagination: { limit: 10, offset: 0, count: 1, hasMore: false } }),
+    ]);
+    const client = new TariffiaClient({ apiKey: 'merchant-secret', baseUrl: 'https://pay.example', fetch: fetcher });
+    const endpoints = await client.getWebhookEndpoints({ limit: 10 });
+    expect(endpoints.pagination).toMatchObject({ count: 1, hasMore: true });
+    const deliveries = await client.getWebhookDeliveries('hook-1', { limit: 10, offset: 0 });
+    expect(deliveries.deliveries[0]?.status).toBe('FAILED');
+    expect(calls.map(({ url }) => `${new URL(url).pathname}${new URL(url).search}`)).toEqual([
+      '/v1/webhooks?limit=10', '/v1/webhooks/hook-1/deliveries?limit=10&offset=0',
+    ]);
+  });
+
+  it('omits empty pagination parameters and normalizes API errors for new methods', async () => {
+    const { calls, fetcher } = fakeFetch([jsonResponse({ customers: [], pagination: { limit: 50, offset: 0, count: 0, hasMore: false } })]);
+    const client = new TariffiaClient({ apiKey: 'merchant-secret', baseUrl: 'https://pay.example', fetch: fetcher });
+    await client.getCustomers({ limit: undefined, offset: undefined });
+    expect(new URL(calls[0].url).search).toBe('');
+
+    const failing = new TariffiaClient({
+      apiKey: 'merchant-secret',
+      fetch: async () => jsonResponse({ error: 'insufficient_scope', message: 'This API key is missing the required scope: customers:read' }, 403),
+    });
+    await expect(failing.getCustomers()).rejects.toMatchObject({ name: 'TariffiaApiError', statusCode: 403, code: 'insufficient_scope' });
+  });
 });
