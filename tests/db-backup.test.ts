@@ -90,6 +90,17 @@ describe('database backup URL handling', () => {
     expect(embedded).toContain('postgres://[redacted]@');
     expect(embedded).not.toContain('hunter2');
   });
+
+  it('does not over-redact unrelated text for short passwords', () => {
+    const parsed = parseDatabaseUrl('postgres://user:p@db:5432/tariffia');
+    // A one-character password must not turn every occurrence of that letter into "[redacted]".
+    const message = sanitize('No *.dump files found in backups/.', parsed, { DATABASE_URL: 'postgres://user:p@db:5432/tariffia' });
+    expect(message).toBe('No *.dump files found in backups/.');
+    expect(message).not.toContain('[redacted]');
+    // The full connection URL is still redacted when present.
+    expect(sanitize('connect postgres://user:p@db:5432/tariffia now', parsed, { DATABASE_URL: 'postgres://user:p@db:5432/tariffia' }))
+      .not.toContain('user:p@');
+  });
 });
 
 describe('database backup archive options and integrity checks', () => {

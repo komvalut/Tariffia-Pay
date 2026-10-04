@@ -135,8 +135,14 @@ export function connectionEnv(parsed, base = process.env) {
 export function sanitize(text, parsed, env = process.env) {
   if (text == null) return '';
   let out = String(text);
-  if (parsed && parsed.password) out = out.split(parsed.password).join('[redacted]');
+  // Redact the full connection URL first so the password is removed in context,
+  // then any standalone occurrence of a non-trivial password. Short passwords
+  // (fewer than 5 characters) are never used as split tokens because they would
+  // over-redact unrelated text; the URL replacement above still covers them.
   if (env.DATABASE_URL) out = out.split(env.DATABASE_URL).join('[redacted]');
+  if (parsed && parsed.password && parsed.password.length >= 5) {
+    out = out.split(parsed.password).join('[redacted]');
+  }
   return out.replace(/postgres(?:ql)?:\/\/[^\s/@]+(?::[^\s/@]*)?@/gi, 'postgres://[redacted]@');
 }
 
