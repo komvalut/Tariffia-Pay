@@ -269,3 +269,21 @@ List endpoints use a shared pagination contract: `limit` (default 50, 1–100) a
 5. Harden and operate per [`../PRODUCTION.md`](../PRODUCTION.md): secrets,
    TLS reverse proxy, migrations, backups/restore, health/readiness and upgrades.
 6. Verify `/health` (liveness) and `/ready` (readiness) from your orchestrator.
+
+---
+
+## Appendix: Admin API (operator-only)
+
+The operator endpoints under the v1/admin namespace are documented in the
+same `GET /openapi.json` document (tagged **Admin**) so the API contract is
+complete. They are **not** part of the merchant integration surface and are
+**not** in the merchant SDK:
+
+- Authenticate with the server-side `x-admin-api-key` header, never a merchant
+  bearer key, and never from a browser.
+- They cover merchant provisioning, platform dashboards, credits, AI/SMS
+  provider administration, usage limits, webhook delivery inspection,
+  subscriptions, invoices/receipts, the global audit log and payment-adapter
+  status. Provider credentials are read from server environment only and are
+  never accepted in request bodies or returned.
+- See `GET /docs` for the rendered reference and filter by the **Admin** tag.

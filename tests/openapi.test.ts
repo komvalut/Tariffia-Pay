@@ -173,6 +173,39 @@ describe('OpenAPI documentation', () => {
     expect(missing, `Merchant routes missing from OpenAPI: ${missing.join(', ')}`).toEqual([]);
   });
 
+  it('documents every implemented admin route with the admin security scheme', () => {
+    const routes = parseImplementedRoutes(app.printRoutes({ commonPrefix: false }));
+    const adminRoutes = routes.filter((route) => route.serverPath.startsWith('/v1/admin/'));
+    expect(adminRoutes.length).toBeGreaterThan(20);
+
+    const missing: string[] = [];
+    for (const route of adminRoutes) {
+      const operations = (openApiDocument.paths as unknown as Record<string, Record<string, { security?: unknown }>>)[route.path];
+      const operation = operations?.[route.method.toLowerCase()];
+      if (!operation) {
+        missing.push(`${route.method} ${route.path}`);
+        continue;
+      }
+      // Admin operations must use the admin header scheme, never the merchant scheme.
+      expect(operation.security, `${route.method} ${route.path} must require the admin key`)
+        .toEqual([{ adminApiKey: [] }]);
+    }
+    expect(missing, `Admin routes missing from OpenAPI: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('never exposes secrets in the documented admin operations', () => {
+    const adminPaths = Object.fromEntries(
+      Object.entries(openApiDocument.paths).filter(([routePath]) => routePath.startsWith('/v1/admin/')),
+    );
+    const serialized = JSON.stringify(adminPaths);
+    expect(serialized).not.toMatch(/tf_live_/);
+    expect(serialized).not.toMatch(/whsec[_-]/i);
+    expect(serialized).not.toMatch(/sk-live|sk-[A-Za-z0-9]{20}/i);
+    expect(serialized).not.toMatch(/-----BEGIN/);
+    expect(serialized).not.toContain('dev-admin-key-change-this-before-deploy');
+    expect(serialized).not.toContain('API_KEY_PEPPER');
+  });
+
   it('documents the shared pagination contract on every paginated list endpoint', () => {
     const paginated = [
       '/v1/orders', '/v1/customers', '/v1/payment-links', '/v1/transactions', '/v1/ai/usage',

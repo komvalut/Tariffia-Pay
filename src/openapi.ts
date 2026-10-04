@@ -25,6 +25,7 @@ const commonErrorResponses = {
 };
 
 const merchantSecurity = [{ merchantApiKey: [] }];
+const adminSecurity = [{ adminApiKey: [] }];
 
 // Shared pagination contract used by every merchant list endpoint.
 const paginationParameters = [
@@ -226,6 +227,7 @@ export const openApiDocument = {
     { name: 'Billing documents', description: 'Invoices and receipts for confirmed payments.' },
     { name: 'Ledger', description: 'Append-only merchant ledger entries.' },
     { name: 'Merchant dashboard', description: 'Read-only data views used by the merchant dashboard.' },
+    { name: 'Admin', description: 'Operator-only endpoints authenticated with the x-admin-api-key header. Never use these from a browser or with a merchant key.' },
     { name: 'Public checkout', description: 'Public hosted checkout and QR.' },
     { name: 'Public receipts', description: 'Public receipt access for customers.' },
   ],
@@ -924,6 +926,232 @@ export const openApiDocument = {
     },
     '/r/{publicId}': {
       get: { tags: ['Public receipts'], security: [], summary: 'Public receipt page', parameters: [{ name: 'publicId', in: 'path', required: true, schema: { type: 'string', minLength: 43, maxLength: 43 } }], responses: { 200: { description: 'HTML receipt page.', content: { 'text/html': { schema: { type: 'string' } } } } } },
+    },
+
+    // --- Admin API (operator-only; x-admin-api-key) -------------------------
+    // Documented to complete the machine-readable contract. These endpoints are
+    // never used by the merchant SDK and must never be called from a browser.
+    '/v1/admin/merchants': {
+      post: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Provision a merchant and issue its first API key',
+        description: 'Creates a merchant and returns a one-time merchant API key. Store the key securely; only its hash is retained.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name', 'email', 'walletAddress'],
+                properties: {
+                  name: { type: 'string', maxLength: 120 },
+                  email: { type: 'string', format: 'email', maxLength: 254 },
+                  walletAddress: { type: 'string', description: 'EVM recipient address for USDC on Base.' },
+                  apiKeyName: { type: 'string', maxLength: 80, default: 'Primary' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Merchant provisioned; the plaintext API key is returned once.', content: { 'application/json': { schema: { type: 'object', properties: { merchant: { type: 'object', additionalProperties: true }, apiKey: { type: 'string', description: 'Shown once; store securely.' }, warning: { type: 'string' } } } } } },
+          ...commonErrorResponses,
+        },
+      },
+    },
+    '/v1/admin/dashboard/overview': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'Platform-wide dashboard counters', responses: { 200: { description: 'Aggregated platform counters.', content: { 'application/json': { schema: { type: 'object', properties: { overview: { type: 'object', additionalProperties: true } } } } } }, ...commonErrorResponses } },
+    },
+    '/v1/admin/dashboard/{collection}': {
+      get: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Read a platform-wide dashboard collection',
+        parameters: [
+          { name: 'collection', in: 'path', required: true, schema: { type: 'string', enum: ['merchants', 'customers', 'orders', 'payments', 'usdc-transactions', 'failed-payments', 'credit-accounts', 'credit-transactions', 'ai-providers', 'ai-models', 'usage', 'webhook-endpoints', 'webhook-deliveries'] } },
+          { name: 'q', in: 'query', schema: { type: 'string', maxLength: 120 } },
+          { name: 'status', in: 'query', schema: { type: 'string', maxLength: 32 } },
+          ...paginationParameters,
+        ],
+        responses: {
+          200: { description: 'Paginated collection rows across merchants.', content: { 'application/json': { schema: { type: 'object', properties: { items: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } },
+          ...commonErrorResponses,
+        },
+      },
+    },
+    '/v1/admin/credits/settings': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'Read credit engine settings', responses: { 200: { description: 'Credit settings.' }, ...commonErrorResponses } },
+      put: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Update credit engine settings',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 200: { description: 'Updated credit settings.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/credits/accounts': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List credit accounts across merchants', parameters: [...paginationParameters], responses: { 200: { description: 'Credit accounts, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { accounts: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
+    },
+    '/v1/admin/credits/transactions': {
+      get: {
+        tags: ['Admin'], security: adminSecurity, summary: 'List credit transactions across merchants',
+        parameters: [
+          { name: 'type', in: 'query', schema: { type: 'string', enum: ['TOPUP', 'DEDUCTION'] } },
+          ...paginationParameters,
+        ],
+        responses: { 200: { description: 'Credit transactions, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { transactions: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/ai/providers': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List AI providers (status only, no credentials)', responses: { 200: { description: 'AI provider summaries.' }, ...commonErrorResponses } },
+      post: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Register an AI provider',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true, description: 'Provider label and non-secret configuration. Credentials are read from server environment only.' } } } },
+        responses: { 201: { description: 'Provider registered.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/ai/providers/{providerId}': {
+      put: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Update an AI provider (label/enabled state)',
+        parameters: [{ name: 'providerId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 200: { description: 'Updated provider.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/ai/providers/{providerId}/models': {
+      post: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Add a model and pricing to an AI provider',
+        parameters: [{ name: 'providerId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 201: { description: 'Model added.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/ai/providers/{providerId}/models/discovery': {
+      get: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Discover models offered by an AI provider',
+        parameters: [{ name: 'providerId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Discovered model list (no credentials).' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/ai/providers/{providerId}/health': {
+      post: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Check an AI provider health',
+        parameters: [{ name: 'providerId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Bounded health status (no secrets).' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/ai/models': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List AI models and pricing', responses: { 200: { description: 'Models with provider costs, customer prices and markup.' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/ai/models/{modelId}': {
+      put: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Update a model and its pricing',
+        parameters: [{ name: 'modelId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 200: { description: 'Updated model.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/ai/usage': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List AI usage across merchants', parameters: [{ name: 'merchantId', in: 'query', schema: { type: 'string', format: 'uuid' } }, ...paginationParameters], responses: { 200: { description: 'AI usage records.', content: { 'application/json': { schema: { type: 'object', properties: { usage: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
+    },
+    '/v1/admin/ai/requests': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List AI provider requests', parameters: [{ name: 'status', in: 'query', schema: { type: 'string' } }, ...paginationParameters], responses: { 200: { description: 'Provider request records.' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/sms/providers': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List SMS providers (status only, no credentials)', responses: { 200: { description: 'SMS provider summaries.' }, ...commonErrorResponses } },
+      post: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Register an SMS provider',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true, description: 'Provider label and non-secret configuration. Credentials are read from server environment only.' } } } },
+        responses: { 201: { description: 'Provider registered.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/sms/providers/{providerId}': {
+      put: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Update an SMS provider (label/enabled state)',
+        parameters: [{ name: 'providerId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 200: { description: 'Updated provider.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/sms/providers/{providerId}/services': {
+      post: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Add a service to an SMS provider',
+        parameters: [{ name: 'providerId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 201: { description: 'Service added.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/sms/providers/{providerId}/health': {
+      post: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Check an SMS provider health',
+        parameters: [{ name: 'providerId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Bounded health status (no secrets).' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/sms/services': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List SMS services', responses: { 200: { description: 'SMS services.' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/sms/services/{serviceId}': {
+      put: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Update an SMS service',
+        parameters: [{ name: 'serviceId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: true } } } },
+        responses: { 200: { description: 'Updated service.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/sms/requests': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List SMS requests across merchants', parameters: [{ name: 'status', in: 'query', schema: { type: 'string' } }, ...paginationParameters], responses: { 200: { description: 'SMS request records.' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/sms/usage': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List SMS usage across merchants', parameters: [{ name: 'merchantId', in: 'query', schema: { type: 'string', format: 'uuid' } }, ...paginationParameters], responses: { 200: { description: 'SMS usage records.' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/usage/merchants': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List per-merchant request usage and limits', responses: { 200: { description: 'Usage per merchant with effective limits and current window.' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/usage/merchants/{merchantId}': {
+      get: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Read one merchant request usage and limits',
+        parameters: [{ name: 'merchantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        responses: { 200: { description: 'Merchant usage detail.' }, ...commonErrorResponses },
+      },
+      put: {
+        tags: ['Admin'], security: adminSecurity, summary: 'Set one merchant request rate limits',
+        parameters: [{ name: 'merchantId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, properties: { generalRequestsPerMinute: { type: 'integer', nullable: true, minimum: 0 }, aiRequestsPerMinute: { type: 'integer', nullable: true, minimum: 0 }, smsRequestsPerMinute: { type: 'integer', nullable: true, minimum: 0 } } } } } },
+        responses: { 200: { description: 'Updated merchant limits.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/webhook-deliveries': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List webhook deliveries across merchants', parameters: [{ name: 'status', in: 'query', schema: { type: 'string' } }, ...paginationParameters], responses: { 200: { description: 'Delivery records (endpoint origin only, no secrets).' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/webhook-deliveries/{deliveryId}/attempts': {
+      get: {
+        tags: ['Admin'], security: adminSecurity, summary: 'List delivery attempts for a delivery',
+        parameters: [{ name: 'deliveryId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        responses: { 200: { description: 'Attempts with normalized errors.' }, ...commonErrorResponses },
+      },
+    },
+    '/v1/admin/subscriptions': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List subscriptions across merchants', parameters: [...paginationParameters], responses: { 200: { description: 'Subscriptions.' }, ...commonErrorResponses } },
+    },
+    '/v1/admin/invoices': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List invoices across merchants', parameters: [...paginationParameters], responses: { 200: { description: 'Invoices, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { invoices: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
+    },
+    '/v1/admin/receipts': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List receipts across merchants', parameters: [...paginationParameters], responses: { 200: { description: 'Receipts, newest first.', content: { 'application/json': { schema: { type: 'object', properties: { receipts: { type: 'array', items: { type: 'object', additionalProperties: true } }, ...paginationProperty } } } } }, ...commonErrorResponses } },
+    },
+    '/v1/admin/audit-log': {
+      get: {
+        tags: ['Admin'], security: adminSecurity, summary: 'List every audit-log entry (all actors)',
+        parameters: [
+          { name: 'actorType', in: 'query', schema: { type: 'string', enum: ['merchant', 'admin'] } },
+          { name: 'action', in: 'query', schema: { type: 'string' } },
+          { name: 'resourceType', in: 'query', schema: { type: 'string' } },
+          ...paginationParameters,
+        ],
+        responses: {
+          200: { description: 'Audit entries across actors, newest first. Never contains secrets.', content: { 'application/json': { schema: { type: 'object', properties: { entries: { type: 'array', items: { $ref: '#/components/schemas/AuditEntry' } }, ...paginationProperty } } } } },
+          ...commonErrorResponses,
+        },
+      },
+    },
+    '/v1/admin/payment-adapters': {
+      get: { tags: ['Admin'], security: adminSecurity, summary: 'List installed payment adapter status (no settings)', responses: { 200: { description: 'Adapter id, name, status and capabilities only.' }, ...commonErrorResponses } },
     },
   },
   components: {
