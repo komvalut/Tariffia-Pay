@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { requireMerchant } from '../http.js';
+import { requireMerchant, requireUuidParam } from '../http.js';
 import { parsePagination, paginate } from '../pagination.js';
 import { paymentStatusLabel, paymentStatuses } from '../payment-status.js';
 
@@ -44,7 +44,7 @@ export const transactionRoutes: FastifyPluginAsync<{ db: Database }> = async (ap
 
   app.get('/v1/transactions/:paymentId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { paymentId } = request.params as { paymentId: string };
+    const paymentId = requireUuidParam(request, 'paymentId');
     const result = await db.query(`${transactionSelect} AND p.id = $2`, [merchant.id, paymentId]);
     if (!result.rows[0]) throw new HttpError(404, 'Transaction not found', 'not_found');
     return reply.send({ transaction: transactionView(result.rows[0]) });

@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireAdmin, requireMerchant } from '../http.js';
+import { parseBody, requireAdmin, requireMerchant, requireUuidParam } from '../http.js';
 import { updateMerchantUsageLimitsSchema } from '../schemas.js';
 import type { MerchantUsageService } from '../services/merchant-usage-service.js';
 
@@ -19,7 +19,7 @@ export const merchantUsageRoutes: FastifyPluginAsync<{ db: Database; merchantUsa
 
     app.get('/v1/admin/usage/merchants/:merchantId', async (request, reply) => {
       requireAdmin(request);
-      const { merchantId } = request.params as { merchantId: string };
+      const merchantId = requireUuidParam(request, 'merchantId');
       const merchant = await db.query<{ name: string; email: string }>(
         'SELECT name, email FROM merchants WHERE id = $1', [merchantId],
       );
@@ -38,7 +38,7 @@ export const merchantUsageRoutes: FastifyPluginAsync<{ db: Database; merchantUsa
 
     app.put('/v1/admin/usage/merchants/:merchantId', async (request, reply) => {
       requireAdmin(request);
-      const { merchantId } = request.params as { merchantId: string };
+      const merchantId = requireUuidParam(request, 'merchantId');
       const body = parseBody(updateMerchantUsageLimitsSchema, request.body);
       const limits = await merchantUsage.updateLimits(merchantId, body);
       return reply.send({

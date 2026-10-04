@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
-import { requireAdmin } from '../http.js';
+import { requireAdmin, requireUuidParam } from '../http.js';
 import { sanitizeStoredWebhookError } from '../webhooks/error-safety.js';
 
 function pageLimit(value: string | undefined): number {
@@ -37,7 +37,7 @@ export const adminWebhookRoutes: FastifyPluginAsync<{ db: Database }> = async (a
 
   app.get('/v1/admin/webhook-deliveries/:deliveryId/attempts', async (request, reply) => {
     requireAdmin(request);
-    const { deliveryId } = request.params as { deliveryId: string };
+    const deliveryId = requireUuidParam(request, 'deliveryId');
     const result = await db.query(
       `SELECT a.id, a.attempt_number AS "attemptNumber", a.request_timestamp AS "requestTimestamp",
               a.started_at AS "startedAt", a.finished_at AS "finishedAt", a.http_status AS "httpStatus", a.error

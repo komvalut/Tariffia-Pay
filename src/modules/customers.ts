@@ -4,7 +4,7 @@ import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
 import { createCustomerSchema } from '../schemas.js';
 import { newId } from '../security.js';
-import { parseBody, requireMerchant } from '../http.js';
+import { parseBody, requireMerchant, requireUuidParam } from '../http.js';
 import { parsePagination, paginate } from '../pagination.js';
 
 type CustomerCounts = { orderCount: number; paymentCount: number };
@@ -78,7 +78,7 @@ export const customerRoutes: FastifyPluginAsync<{ db: Database }> = async (app, 
 
   app.get('/v1/customers/:customerId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { customerId } = request.params as { customerId: string };
+    const customerId = requireUuidParam(request, 'customerId');
     const result = await db.query(
       `SELECT id, external_id AS "externalId", email, name, metadata, created_at AS "createdAt"
          FROM customers WHERE id = $1 AND merchant_id = $2`,

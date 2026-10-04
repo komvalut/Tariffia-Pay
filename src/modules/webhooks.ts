@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireMerchant } from '../http.js';
+import { parseBody, requireMerchant, requireUuidParam } from '../http.js';
 import { parsePagination, paginate } from '../pagination.js';
 import { createWebhookSchema, updateWebhookSchema } from '../schemas.js';
 import { newId } from '../security.js';
@@ -47,7 +47,7 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLo
   app.patch('/v1/webhooks/:endpointId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
     const body = parseBody(updateWebhookSchema, request.body);
-    const { endpointId } = request.params as { endpointId: string };
+    const endpointId = requireUuidParam(request, 'endpointId');
     const currentResult = await db.query<{
       id: string; name: string; url: string; events: string[]; enabled: boolean;
       secret_ciphertext: string; secret_nonce: string; secret_auth_tag: string;
@@ -96,7 +96,7 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLo
 
   app.delete('/v1/webhooks/:endpointId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { endpointId } = request.params as { endpointId: string };
+    const endpointId = requireUuidParam(request, 'endpointId');
     const deleted = await db.transaction(async (client) => {
       const endpoint = await client.query(
         `UPDATE webhook_endpoints SET enabled = false, deleted_at = COALESCE(deleted_at, now()), updated_at = now()
@@ -121,7 +121,7 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLo
 
   app.get('/v1/webhooks/:endpointId/deliveries', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { endpointId } = request.params as { endpointId: string };
+    const endpointId = requireUuidParam(request, 'endpointId');
     const query = request.query as { limit?: string; offset?: string };
     const { limit, offset } = parsePagination(query);
     const result = await db.query(
@@ -147,7 +147,8 @@ export const webhookRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLo
 
   app.get('/v1/webhooks/:endpointId/deliveries/:deliveryId/attempts', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { endpointId, deliveryId } = request.params as { endpointId: string; deliveryId: string };
+    const endpointId = requireUuidParam(request, 'endpointId');
+    const deliveryId = requireUuidParam(request, 'deliveryId');
     const result = await db.query(
       `SELECT a.id, a.attempt_number AS "attemptNumber", a.request_timestamp AS "requestTimestamp",
               a.started_at AS "startedAt", a.finished_at AS "finishedAt", a.http_status AS "httpStatus", a.error

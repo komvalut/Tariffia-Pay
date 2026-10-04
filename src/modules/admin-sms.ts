@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireAdmin } from '../http.js';
+import { parseBody, requireAdmin, requireUuidParam } from '../http.js';
 import {
   createSmsProviderSchema,
   createSmsServiceSchema,
@@ -128,7 +128,7 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
     app.put('/v1/admin/sms/providers/:providerId', async (request, reply) => {
       requireAdmin(request);
       const body = parseBody(updateSmsProviderSchema, request.body);
-      const { providerId } = request.params as { providerId: string };
+      const providerId = requireUuidParam(request, 'providerId');
       const result = await db.query(
         `UPDATE sms_providers SET name = COALESCE($2, name), enabled = COALESCE($3, enabled), updated_at = now()
           WHERE id = $1
@@ -142,7 +142,7 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
 
     app.post('/v1/admin/sms/providers/:providerId/health', async (request, reply) => {
       requireAdmin(request);
-      const { providerId } = request.params as { providerId: string };
+      const providerId = requireUuidParam(request, 'providerId');
       const provider = await db.query('SELECT id, slug FROM sms_providers WHERE id = $1', [providerId]);
       if (!provider.rows[0]) throw new HttpError(404, 'SMS provider not found', 'sms_provider_not_found');
       const health = await smsProviders.health(provider.rows[0].slug);
@@ -174,7 +174,7 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
     app.post('/v1/admin/sms/providers/:providerId/services', async (request, reply) => {
       requireAdmin(request);
       const body = parseBody(createSmsServiceSchema, request.body);
-      const { providerId } = request.params as { providerId: string };
+      const providerId = requireUuidParam(request, 'providerId');
       const provider = await db.query('SELECT id FROM sms_providers WHERE id = $1', [providerId]);
       if (!provider.rows[0]) throw new HttpError(404, 'SMS provider not found', 'sms_provider_not_found');
       await validateFallback(db, body.fallbackProviderId, providerId);
@@ -196,7 +196,7 @@ export const adminSmsRoutes: FastifyPluginAsync<{ db: Database; smsProviders: Sm
     app.put('/v1/admin/sms/services/:serviceId', async (request, reply) => {
       requireAdmin(request);
       const body = parseBody(updateSmsServiceSchema, request.body);
-      const { serviceId } = request.params as { serviceId: string };
+      const serviceId = requireUuidParam(request, 'serviceId');
       const existing = await db.query<{ provider_id: string }>(
         'SELECT provider_id FROM sms_services WHERE id = $1', [serviceId],
       );

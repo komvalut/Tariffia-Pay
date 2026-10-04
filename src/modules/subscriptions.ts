@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { requireAdmin, requireMerchant, parseBody } from '../http.js';
+import { requireAdmin, requireMerchant, parseBody, requireUuidParam } from '../http.js';
 import {
   createSubscriptionPlanSchema,
   createSubscriptionSchema,
@@ -25,7 +25,7 @@ export const subscriptionRoutes: FastifyPluginAsync<{ db: Database; subscription
 
   app.put('/v1/subscription-plans/:planId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { planId } = request.params as { planId: string };
+    const planId = requireUuidParam(request, 'planId');
     const body = parseBody(updateSubscriptionPlanSchema, request.body);
     return reply.send(await subscriptions.updatePlan(merchant.id, planId, body));
   });
@@ -45,13 +45,13 @@ export const subscriptionRoutes: FastifyPluginAsync<{ db: Database; subscription
 
   app.get('/v1/subscriptions/:subscriptionId/billing-cycles', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { subscriptionId } = request.params as { subscriptionId: string };
+    const subscriptionId = requireUuidParam(request, 'subscriptionId');
     return reply.send(await subscriptions.listBillingCycles(merchant.id, subscriptionId));
   });
 
   app.post('/v1/subscriptions/:subscriptionId/renew', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { subscriptionId } = request.params as { subscriptionId: string };
+    const subscriptionId = requireUuidParam(request, 'subscriptionId');
     parseBody(manualSubscriptionRenewalSchema, request.body ?? {});
     const idempotencyKey = request.headers['idempotency-key'];
     if (typeof idempotencyKey !== 'string') throw new HttpError(400, 'Idempotency-Key header is required', 'missing_idempotency_key');
@@ -60,20 +60,20 @@ export const subscriptionRoutes: FastifyPluginAsync<{ db: Database; subscription
 
   app.patch('/v1/subscriptions/:subscriptionId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { subscriptionId } = request.params as { subscriptionId: string };
+    const subscriptionId = requireUuidParam(request, 'subscriptionId');
     const body = parseBody(subscriptionActionSchema, request.body);
     return reply.send(await subscriptions.updateState(merchant.id, subscriptionId, body.action));
   });
 
   app.get('/v1/subscriptions/:subscriptionId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { subscriptionId } = request.params as { subscriptionId: string };
+    const subscriptionId = requireUuidParam(request, 'subscriptionId');
     return reply.send({ subscription: await subscriptions.getSubscription(merchant.id, subscriptionId) });
   });
 
   app.get('/v1/customers/:customerId/subscriptions', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { customerId } = request.params as { customerId: string };
+    const customerId = requireUuidParam(request, 'customerId');
     return reply.send(await subscriptions.listCustomerSubscriptions(merchant.id, customerId));
   });
 

@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireMerchant } from '../http.js';
+import { parseBody, requireMerchant, requireUuidParam } from '../http.js';
 import { verifyPaymentSchema } from '../schemas.js';
 import { paymentStatusLabel } from '../payment-status.js';
 import { getPaymentInvoice, merchantInvoiceView } from './billing-documents.js';
@@ -13,7 +13,7 @@ export const paymentRoutes: FastifyPluginAsync<{
 }> = async (app, { db, verification, adapters }) => {
   app.get('/v1/payments/:paymentId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { paymentId } = request.params as { paymentId: string };
+    const paymentId = requireUuidParam(request, 'paymentId');
     const result = await db.query(
       `SELECT id, order_id AS "orderId", amount::text AS amount, amount_base_units::text AS "amountBaseUnits",
               currency, adapter, network, recipient_address AS "recipientAddress", token_address AS "tokenAddress", status,
@@ -30,7 +30,7 @@ export const paymentRoutes: FastifyPluginAsync<{
   // Payment details connect existing payment/order data with the existing invoice/receipt system.
   app.get('/v1/payments/:paymentId/details', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { paymentId } = request.params as { paymentId: string };
+    const paymentId = requireUuidParam(request, 'paymentId');
     const result = await db.query<{
       id: string; orderId: string; amount: string; amountBaseUnits: string; currency: string; adapter: string;
       network: string; recipientAddress: string; tokenAddress: string | null; status: string; txHash: string | null;
@@ -91,7 +91,7 @@ export const paymentRoutes: FastifyPluginAsync<{
 
   app.post('/v1/payments/:paymentId/verify', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { paymentId } = request.params as { paymentId: string };
+    const paymentId = requireUuidParam(request, 'paymentId');
     const body = parseBody(verifyPaymentSchema, request.body);
     const result = await verification.process(paymentId, merchant.id, body.transactionId ?? body.transactionHash!);
     const statusCode = ['CONFIRMED', 'FAILED'].includes(result.status) ? 200 : 202;

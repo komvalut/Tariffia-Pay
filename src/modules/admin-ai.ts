@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireAdmin } from '../http.js';
+import { parseBody, requireAdmin, requireUuidParam } from '../http.js';
 import { createAiModelSchema, createAiProviderSchema, updateAiModelSchema, updateAiProviderSchema } from '../schemas.js';
 import { newId } from '../security.js';
 import { AiProviderError, aiProviderErrorMessage, normalizeAiProviderError } from '../ai-provider.js';
@@ -79,7 +79,7 @@ export const adminAiRoutes: FastifyPluginAsync<{ db: Database; aiProviders: AiPr
 
   app.post('/v1/admin/ai/providers/:providerId/health', async (request, reply) => {
     requireAdmin(request);
-    const { providerId } = request.params as { providerId: string };
+    const providerId = requireUuidParam(request, 'providerId');
     const provider = await db.query('SELECT id, slug FROM ai_providers WHERE id = $1', [providerId]);
     if (!provider.rows[0]) throw new HttpError(404, 'AI provider not found', 'ai_provider_not_found');
     const health = await aiProviders.health(provider.rows[0].slug);
@@ -97,7 +97,7 @@ export const adminAiRoutes: FastifyPluginAsync<{ db: Database; aiProviders: AiPr
 
   app.get('/v1/admin/ai/providers/:providerId/models/discovery', async (request, reply) => {
     requireAdmin(request);
-    const { providerId } = request.params as { providerId: string };
+    const providerId = requireUuidParam(request, 'providerId');
     const provider = await db.query('SELECT id, slug FROM ai_providers WHERE id = $1', [providerId]);
     if (!provider.rows[0]) throw new HttpError(404, 'AI provider not found', 'ai_provider_not_found');
     try {
@@ -143,7 +143,7 @@ export const adminAiRoutes: FastifyPluginAsync<{ db: Database; aiProviders: AiPr
   app.put('/v1/admin/ai/providers/:providerId', async (request, reply) => {
     requireAdmin(request);
     const body = parseBody(updateAiProviderSchema, request.body);
-    const { providerId } = request.params as { providerId: string };
+    const providerId = requireUuidParam(request, 'providerId');
     const result = await db.query(
       `UPDATE ai_providers SET name = COALESCE($2, name), enabled = COALESCE($3, enabled), updated_at = now()
         WHERE id = $1
@@ -168,7 +168,7 @@ export const adminAiRoutes: FastifyPluginAsync<{ db: Database; aiProviders: AiPr
   app.post('/v1/admin/ai/providers/:providerId/models', async (request, reply) => {
     requireAdmin(request);
     const body = parseBody(createAiModelSchema, request.body);
-    const { providerId } = request.params as { providerId: string };
+    const providerId = requireUuidParam(request, 'providerId');
     const provider = await db.query('SELECT id FROM ai_providers WHERE id = $1', [providerId]);
     if (!provider.rows[0]) throw new HttpError(404, 'AI provider not found', 'ai_provider_not_found');
     const result = await db.query(
@@ -192,7 +192,7 @@ export const adminAiRoutes: FastifyPluginAsync<{ db: Database; aiProviders: AiPr
   app.put('/v1/admin/ai/models/:modelId', async (request, reply) => {
     requireAdmin(request);
     const body = parseBody(updateAiModelSchema, request.body);
-    const { modelId } = request.params as { modelId: string };
+    const modelId = requireUuidParam(request, 'modelId');
     const result = await db.query(
       `UPDATE ai_models SET slug = $2, name = $3, enabled = $4, pricing_mode = $5,
           provider_cost_per_request_usd = $6, customer_price_per_request_usd = $7,

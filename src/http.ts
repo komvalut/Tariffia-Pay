@@ -21,6 +21,23 @@ export function parseBody<T extends ZodTypeAny>(schema: T, value: unknown): z.in
   return result.data;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Validates a UUID-shaped path parameter at the route boundary so a malformed id
+ * can never reach a UUID-typed SQL comparison (which would otherwise raise a
+ * database cast error and surface as a 500). Malformed ids return a safe 400;
+ * valid-but-nonexistent ids keep their existing 404 behavior. Values are still
+ * always passed to SQL as bound parameters.
+ */
+export function requireUuidParam(request: FastifyRequest, name: string): string {
+  const value = (request.params as Record<string, unknown>)[name];
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
+    throw new HttpError(400, `The "${name}" path parameter must be a valid UUID`, 'invalid_path_parameter');
+  }
+  return value;
+}
+
 export function requireAdmin(request: FastifyRequest): void {
   const adminKey = request.headers['x-admin-api-key'];
   if (typeof adminKey !== 'string' || !secretEquals(adminKey, config.ADMIN_API_KEY)) {

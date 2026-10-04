@@ -794,6 +794,7 @@ export const TARIFFIA_API_ERROR_CODES = [
   'validation_error',
   'bad_request',
   'invalid_pagination',
+  'invalid_path_parameter',
   'missing_idempotency_key',
   'invalid_idempotency_key',
   'idempotency_conflict',

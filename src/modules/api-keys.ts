@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { requireMerchant, parseBody } from '../http.js';
+import { requireMerchant, parseBody, requireUuidParam } from '../http.js';
 import { createApiKey, newId } from '../security.js';
 import { createApiKeySchema } from '../schemas.js';
 import { DEFAULT_MERCHANT_SCOPES } from '../scopes.js';
@@ -45,7 +45,7 @@ export const apiKeyRoutes: FastifyPluginAsync<{ db: Database; auditLog: AuditLog
 
   app.delete('/v1/api-keys/:keyId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { keyId } = request.params as { keyId: string };
+    const keyId = requireUuidParam(request, 'keyId');
     // Scoped by merchant so another merchant's key is indistinguishable from a missing one.
     const result = await db.query(
       `UPDATE api_keys SET revoked_at = now()

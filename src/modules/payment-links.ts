@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireMerchant } from '../http.js';
+import { parseBody, requireMerchant, requireUuidParam } from '../http.js';
 import { parsePagination, paginate } from '../pagination.js';
 import { createOrderSchema, updatePaymentLinkSchema } from '../schemas.js';
 import { checkoutQrUrlForPayment, checkoutUrlForPayment } from '../checkout-links.js';
@@ -68,7 +68,7 @@ export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: 
 
   app.get('/v1/payment-links/:paymentId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { paymentId } = request.params as { paymentId: string };
+    const paymentId = requireUuidParam(request, 'paymentId');
     const result = await db.query<PaymentLinkRecord>(
       `${linkSelect} AND p.id = $2 AND pl.deleted_at IS NULL`,
       [merchant.id, paymentId],
@@ -79,7 +79,7 @@ export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: 
 
   app.patch('/v1/payment-links/:paymentId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { paymentId } = request.params as { paymentId: string };
+    const paymentId = requireUuidParam(request, 'paymentId');
     const body = parseBody(updatePaymentLinkSchema, request.body);
     const existing = await db.query<{ linkEnabled: boolean | null; deletedAt: Date | null }>(
       `${linkSelect} AND p.id = $2`,
@@ -105,7 +105,7 @@ export const paymentLinkRoutes: FastifyPluginAsync<{ db: Database; paymentCore: 
 
   app.delete('/v1/payment-links/:paymentId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { paymentId } = request.params as { paymentId: string };
+    const paymentId = requireUuidParam(request, 'paymentId');
     const existing = await db.query<{ deletedAt: Date | null }>(`${linkSelect} AND p.id = $2`, [merchant.id, paymentId]);
     const link = existing.rows[0];
     if (!link || link.deletedAt) throw new HttpError(404, 'Payment link not found', 'not_found');

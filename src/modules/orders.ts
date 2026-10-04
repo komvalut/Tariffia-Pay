@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireMerchant } from '../http.js';
+import { parseBody, requireMerchant, requireUuidParam } from '../http.js';
 import { parsePagination, paginate } from '../pagination.js';
 import { createOrderSchema } from '../schemas.js';
 import { orderStatusLabel, orderStatuses, paymentStatusLabel } from '../payment-status.js';
@@ -42,7 +42,7 @@ export const orderRoutes: FastifyPluginAsync<{ db: Database; paymentCore: Paymen
 
   app.get('/v1/orders/:orderId', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { orderId } = request.params as { orderId: string };
+    const orderId = requireUuidParam(request, 'orderId');
     const result = await db.query(
       `SELECT o.id, o.customer_id AS "customerId", o.reference, o.description, o.amount::text AS amount,
               o.currency, o.status, o.metadata, o.created_at AS "createdAt", o.updated_at AS "updatedAt",

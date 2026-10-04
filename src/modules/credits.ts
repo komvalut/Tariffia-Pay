@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { formatUnits, parseUnits } from 'viem';
 import type { Database } from '../db.js';
 import { HttpError } from '../errors.js';
-import { parseBody, requireMerchant } from '../http.js';
+import { parseBody, requireMerchant, requireUuidParam } from '../http.js';
 import { parsePagination, paginate } from '../pagination.js';
 import { createCreditDeductionSchema, createCreditTopupSchema } from '../schemas.js';
 import { hashRequest, newId } from '../security.js';
@@ -83,7 +83,7 @@ export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEng
 
   app.get('/v1/credits/:customerId/balance', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { customerId } = request.params as { customerId: string };
+    const customerId = requireUuidParam(request, 'customerId');
     const account = await credits.getOrCreateAccount(merchant.id, customerId);
     const settings = await credits.getSettings();
     return reply.send({
@@ -97,7 +97,7 @@ export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEng
 
   app.get('/v1/credits/:customerId/topups', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { customerId } = request.params as { customerId: string };
+    const customerId = requireUuidParam(request, 'customerId');
     const account = await credits.getOrCreateAccount(merchant.id, customerId);
     const query = request.query as { limit?: string; offset?: string };
     const { limit, offset } = parsePagination(query);
@@ -128,7 +128,7 @@ export const creditRoutes: FastifyPluginAsync<{ db: Database; credits: CreditEng
 
   app.get('/v1/credits/:customerId/usage', async (request, reply) => {
     const merchant = await requireMerchant(request, db);
-    const { customerId } = request.params as { customerId: string };
+    const customerId = requireUuidParam(request, 'customerId');
     const account = await credits.getOrCreateAccount(merchant.id, customerId);
     const query = request.query as { limit?: string; offset?: string };
     const { limit, offset } = parsePagination(query);
