@@ -10,7 +10,16 @@ Phase 16 added merchant subscription plans, billing cycles and lifecycle managem
 
 ## Run locally
 
-Requirements: Node.js 20+ and Docker Compose.
+For a step-by-step local walkthrough — zero-setup mock verification, a hands-on
+no-Docker server, and Docker as an optional convenience — see
+[`docs/QUICKSTART.md`](docs/QUICKSTART.md). The zero-setup path needs only Node.js
+20+ and dependencies:
+
+```sh
+npm test -- tests/production-smoke.test.ts
+```
+
+The quickest Docker path is still just:
 
 ```sh
 cp .env.example .env
