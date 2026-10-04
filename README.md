@@ -29,7 +29,9 @@ sits behind a payment adapter. USDC on Base is the first adapter; Lightning
 
 **Start here:** [`docs/INTEGRATION.md`](docs/INTEGRATION.md) (merchant
 integration), [`docs/QUICKSTART.md`](docs/QUICKSTART.md) (run locally),
-[`PRODUCTION.md`](PRODUCTION.md) (deploy and operate). API reference:
+[`PRODUCTION.md`](PRODUCTION.md) (deploy and operate),
+[`docs/RELEASING.md`](docs/RELEASING.md) (release readiness) and
+[`CHANGELOG.md`](CHANGELOG.md). API reference:
 `GET /openapi.json` and `GET /docs`. Adapters: [`PAYMENT_ADAPTERS.md`](PAYMENT_ADAPTERS.md).
 SMS providers: [`SMS_PROVIDERS.md`](SMS_PROVIDERS.md).
 
