@@ -1,12 +1,37 @@
 # Tariffia Pay
 
-Self-hosted, non-custodial merchant payment infrastructure. The payment core owns merchants, customers, orders, payments and the immutable transaction ledger. Chain-specific behavior belongs behind payment adapters; USDC on Base is the first adapter and is implemented in Phase 2.
+Self-hosted, non-custodial merchant payment infrastructure. Merchants accept
+crypto payments directly to their own wallet, and every chain-specific behavior
+sits behind a payment adapter. USDC on Base is the first adapter; Lightning
+(LND REST) is available but disabled by default.
 
-## Phase 1-15 status
+## What it does
 
-Implemented: PostgreSQL schema/migrations, admin-provisioned merchants, hashed merchant API keys, customers, idempotent order/payment creation, append-only ledger, the formal payment-adapter contract and registry with Base USDC verification and a disabled-by-default LND REST Lightning provider, unified multi-method checkout, invoices and receipts, signed/retried merchant webhooks, an internal customer Credit Engine, configurable AI reseller pricing with usage metering, separate admin/merchant dashboards, the official TypeScript integration package, production security hardening, and self-hosted production deployment support. Configure Lightning only through server-side environment secrets. Additional payment methods are later phases.
+- **Payments:** merchants, customers, orders, payments and an immutable ledger,
+  with idempotent creation and server-authoritative on-chain verification.
+- **Payment methods:** adapter-based (Base USDC, optional Lightning) with a
+  unified multi-method hosted checkout, QR codes and payment links.
+- **Billing:** invoices and receipts issued automatically on confirmed payments.
+- **Webhooks:** signed, retried merchant event delivery.
+- **Internal credits:** a non-withdrawable credit engine used for metered usage.
+- **AI reseller:** OpenAI-compatible chat (streaming + tool calls) with
+  configurable customer pricing and credit settlement.
+- **SMS/OTP:** pluggable SMS providers with OTP generation and charging.
+- **Subscriptions:** plans, billing cycles and automatic renewal on the same
+  Payment Core.
+- **Merchant + admin dashboards:** same-origin, no secrets displayed.
+- **Self-service APIs:** customers, orders, transactions, payment links,
+  revenue, usage, settings, notifications, API keys, webhooks, audit log.
+- **Official TypeScript SDK:** server client (`@tariffia/pay/server`) and
+  credential-free browser checkout helpers (`@tariffia/pay/browser`).
+- **Operations:** health/readiness probes, hardened production config,
+  backup/restore tooling, and documented upgrade/rollback procedures.
 
-Phase 16 added merchant subscription plans, billing cycles and lifecycle management on the same Payment Core. Phase 17 connected the AI pricing engine to a real OpenAI-compatible provider behind a server-side credential with credit authorization before every provider call. Phase 18 added the OTP/SMS charging service on the same credit, ledger and pricing architecture, plus streaming chat completions and tool-call support for the AI gateway. Phase 19 hardened the SMS provider architecture: multiple providers, capability validation, health gating, explicit primary/fallback selection with safe-retry-only fallback, stable provider idempotency keys and a full attempt audit trail. Phase 20 added TextBee as the first real SMS provider adapter (Android-device gateway, `x-api-key` authentication, disabled by default) behind the same contract; see [`SMS_PROVIDERS.md`](SMS_PROVIDERS.md). Phase 21 added a per-merchant request usage counter and configurable rate limits for general, AI and SMS requests on top of the existing global limiter.
+**Start here:** [`docs/INTEGRATION.md`](docs/INTEGRATION.md) (merchant
+integration), [`docs/QUICKSTART.md`](docs/QUICKSTART.md) (run locally),
+[`PRODUCTION.md`](PRODUCTION.md) (deploy and operate). API reference:
+`GET /openapi.json` and `GET /docs`. Adapters: [`PAYMENT_ADAPTERS.md`](PAYMENT_ADAPTERS.md).
+SMS providers: [`SMS_PROVIDERS.md`](SMS_PROVIDERS.md).
 
 ## Run locally
 
