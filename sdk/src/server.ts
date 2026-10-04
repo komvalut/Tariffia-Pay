@@ -778,13 +778,90 @@ export interface AiUsageResult {
   };
 }
 
+/**
+ * Machine-readable error codes returned by the Tariffia API in the `error`
+ * field of an error response. This union covers the codes the current API
+ * emits plus client-side transport fallbacks. It is intentionally open: an
+ * unrecognized code from a newer server is still surfaced (as the raw string)
+ * so nothing is swallowed.
+ */
+export const TARIFFIA_API_ERROR_CODES = [
+  // Authentication / authorization
+  'unauthorized',
+  'insufficient_scope',
+  'forbidden',
+  // Validation / pagination / request shape
+  'validation_error',
+  'bad_request',
+  'invalid_pagination',
+  'missing_idempotency_key',
+  'invalid_idempotency_key',
+  'idempotency_conflict',
+  'invalid_order_status',
+  'invalid_transaction_status',
+  'invalid_transaction_network',
+  'invalid_currency',
+  'invalid_date_range',
+  'invalid_webhook_url',
+  'invalid_subscription_state',
+  'invalid_subscription_end_date',
+  // Resources
+  'not_found',
+  'merchant_not_found',
+  'customer_not_found',
+  'subscription_not_found',
+  'subscription_plan_not_found',
+  'subscription_attempt_not_found',
+  'ai_provider_not_found',
+  'ai_model_not_found',
+  'sms_provider_not_found',
+  'sms_service_not_found',
+  // State / money / usage
+  'conflict',
+  'insufficient_credits',
+  'zero_usage_price',
+  'zero_sms_usage_price',
+  'topup_below_minimum',
+  'topup_above_maximum',
+  'sms_request_conflict',
+  'sms_request_in_progress',
+  'sms_request_already_settled',
+  'subscription_expired',
+  'subscription_renewal_not_due',
+  'recurring_unavailable',
+  'payment_method_currency_unsupported',
+  // Availability / limits / transport
+  'rate_limited',
+  'merchant_rate_limited',
+  'adapter_unavailable',
+  'sms_settlement_failed',
+  'service_unavailable',
+  // Client-side fallbacks (never sent by the server)
+  'request_error',
+  'http_error',
+] as const;
+
+export type TariffiaApiErrorCode = (typeof TARIFFIA_API_ERROR_CODES)[number];
+
+const TARIFFIA_API_ERROR_CODE_SET: ReadonlySet<string> = new Set(TARIFFIA_API_ERROR_CODES);
+
+/** Preserves any server code; narrows to the known union when recognized. */
+export function isTariffiaApiErrorCode(value: string): value is TariffiaApiErrorCode {
+  return TARIFFIA_API_ERROR_CODE_SET.has(value);
+}
+
 export class TariffiaApiError extends Error {
   readonly name = 'TariffiaApiError';
 
   constructor(
     message: string,
     public readonly statusCode: number,
-    public readonly code: string,
+    /**
+     * The machine-readable error code. Values known to Tariffia are members of
+     * {@link TariffiaApiErrorCode}; a code from a newer server is preserved as a
+     * raw string rather than being dropped.
+     */
+    public readonly code: TariffiaApiErrorCode | (string & {}),
     public readonly responseBody: unknown,
   ) {
     super(message);

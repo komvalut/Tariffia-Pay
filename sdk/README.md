@@ -119,6 +119,34 @@ The SDK forwards `Idempotency-Key` for orders, payment links, credit top-ups, su
 
 `TariffiaApiError` exposes `statusCode`, `code`, `message`, and the parsed `responseBody`. Network failures and aborts are returned as the underlying Fetch errors. The response interfaces follow the current API; optional fields mirror fields that are optional in the API response.
 
+#### Error codes
+
+`TariffiaApiError.code` is typed as `TariffiaApiErrorCode | (string & {})`. The union
+(`TARIFFIA_API_ERROR_CODES`) covers the machine-readable codes the API returns —
+for example `unauthorized`, `insufficient_scope`, `not_found`, `validation_error`,
+`invalid_pagination`, `missing_idempotency_key`, `idempotency_conflict`,
+`insufficient_credits`, `rate_limited` — plus the client fallbacks `request_error`
+and `http_error`. An unrecognized code from a newer server is preserved as a raw
+string rather than being dropped; use `isTariffiaApiErrorCode(value)` to narrow:
+
+```ts
+import { TariffiaApiError, isTariffiaApiErrorCode } from '@tariffia/pay/server';
+
+try {
+  await tariffia.getCustomers();
+} catch (error) {
+  if (error instanceof TariffiaApiError) {
+    if (error.code === 'insufficient_scope') {
+      // This key lacks the scope required by the route.
+    } else if (isTariffiaApiErrorCode(error.code)) {
+      // A known API error code.
+    } else {
+      // A code from a newer server; `error.code` is the raw string.
+    }
+  }
+}
+```
+
 ### Pagination
 
 Every paginated list method accepts `{ limit?, offset? }` and returns the resource array plus a `pagination` object `{ limit, offset, count, hasMore }`, matching the server contract (default `limit` 50, maximum 100; invalid values produce an `invalid_pagination` error from the API, surfaced as `TariffiaApiError`).
