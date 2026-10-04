@@ -161,3 +161,41 @@ the automated tests. That means:
   separate, deliberate step and is not part of this quickstart.
 
 Do not treat a PENDING payment or a mock confirmation as a real settlement.
+
+---
+
+## Real PostgreSQL validation (optional)
+
+The normal `npm test` suite runs on **pg-mem**, an in-memory PostgreSQL. pg-mem
+cannot execute PL/pgSQL trigger functions, so the test harness strips the
+database-level guarantees that production relies on: the `ledger_entries`
+immutability trigger and the `audit_log` append-only trigger. Those guarantees
+are therefore only truly exercised on real PostgreSQL.
+
+If you have a **disposable/dedicated PostgreSQL 16** database, you can run the
+opt-in integration lane, which applies the real migrations (without stripping
+any trigger) and proves:
+
+- all current migrations apply through the real migration runner and are recorded
+  in `schema_migrations` (and re-running is idempotent),
+- `UPDATE`/`DELETE` on `ledger_entries` are rejected by the real trigger,
+- `UPDATE`/`DELETE` on `audit_log` are rejected by the real trigger, while
+  `INSERT` still works,
+- a real-engine `ON CONFLICT ... DO UPDATE ... RETURNING` upsert returns the
+  updated row (a behavior pg-mem does not faithfully reproduce).
+
+```sh
+# Point TEST_DATABASE_URL at a DISPOSABLE database. Never point it at production.
+TEST_DATABASE_URL='postgres://tariffia:tariffia@localhost:5432/tariffia_test' \
+  npm run test:postgres
+```
+
+Behavior and safety:
+
+- If `TEST_DATABASE_URL` is unset, the lane **skips cleanly** and prints nothing
+  destructive; the normal suite is unaffected.
+- It creates a merchant-scoped set of rows and deletes the rows the schema
+  permits; ledger and audit rows are intentionally append-only, so use a
+  disposable database.
+- It does not require database-admin privileges and does not drop the database.
+- `npm test` stays pg-mem-only; `npm run test:postgres` runs only this lane.

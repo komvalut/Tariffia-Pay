@@ -18,6 +18,7 @@
     "backup:verify": "node scripts/db-backup.mjs verify",
     "backup:restore": "node scripts/db-backup.mjs restore",
     "test": "vitest run",
+    "test:postgres": "vitest run tests/postgres-integration.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p sdk/tsconfig.json"
   },
