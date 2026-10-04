@@ -96,13 +96,3 @@ export function merchantScopeForRoute(method: string, routeUrl: string): Merchan
   const scope = `${area}:${action}`;
   return MERCHANT_SCOPE_SET.has(scope) ? (scope as MerchantScope) : undefined;
 }
-
-/** Formats the scope catalogue for documentation output. */
-export function describeMerchantScopes(): Array<{ name: MerchantScope; description: string }> {
-  return MERCHANT_SCOPES.map((name) => ({
-    name,
-    description: name.endsWith(':write')
-      ? `Write access to the ${name.slice(0, -':write'.length)} area (also grants read).`
-      : `Read access to the ${name.slice(0, -':read'.length)} area.`,
-  }));
-}

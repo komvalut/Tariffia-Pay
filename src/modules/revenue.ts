@@ -4,7 +4,6 @@ import { HttpError } from '../errors.js';
 import { requireMerchant } from '../http.js';
 
 const pendingStatuses = ['CREATED', 'PENDING', 'DETECTED', 'VERIFYING'];
-const terminalStatuses = ['CONFIRMED', 'FAILED', 'EXPIRED'];
 
 function parseDate(value: string | undefined, field: string): Date | null {
   if (value === undefined || value.trim() === '') return null;
@@ -101,7 +100,6 @@ export const revenueRoutes: FastifyPluginAsync<{ db: Database }> = async (app, {
       } else if (row.status === 'EXPIRED') {
         expiredPaymentCount += row.count;
       }
-      void terminalStatuses;
     }
     const confirmedCurrencies = Object.keys(totalsByCurrency);
     const currency = confirmedCurrencies.length === 0 ? null : confirmedCurrencies.length === 1 ? confirmedCurrencies[0]! : 'MIXED';

@@ -45,11 +45,6 @@ export function parsePagination(query: PaginationQuery = {}): { limit: number; o
   return { limit, offset };
 }
 
-/** Builds the shared metadata block. `count` is the number of items actually returned. */
-export function paginationMeta(limit: number, offset: number, count: number): Pagination {
-  return { limit, offset, count, hasMore: count === limit };
-}
-
 /**
  * Slices a `limit + 1` result set into the page items and metadata. Callers query `limit + 1`
  * rows so `hasMore` is known without a second count query.
