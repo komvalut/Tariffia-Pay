@@ -92,5 +92,7 @@ production tag as part of routine development.
       `git diff --check` all green
 - [ ] `cd sdk && npm pack --dry-run` shows the expected files and no secrets
 - [ ] (Optional) real-PostgreSQL lane run on a normal host:
-      `TEST_DATABASE_URL=... npm run test:postgres`
+      `TEST_DATABASE_URL=... npm run test:postgres` — the last recorded run and
+      its PostgreSQL-version caveats are in
+      [`QUICKSTART.md`](QUICKSTART.md#real-postgresql-validation-optional)
 - [ ] Publish and tag only as deliberate, separate steps

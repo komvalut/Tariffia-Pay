@@ -391,7 +391,7 @@ The normal `npm test` suite runs on pg-mem (in-memory PostgreSQL), which cannot 
 TEST_DATABASE_URL='postgres://tariffia:tariffia@localhost:5432/tariffia_test' npm run test:postgres
 ```
 
-If `TEST_DATABASE_URL` is unset the lane skips cleanly and `npm test` is unaffected. See [`docs/QUICKSTART.md`](docs/QUICKSTART.md#real-postgresql-validation-optional) for details.
+If `TEST_DATABASE_URL` is unset the lane skips cleanly and `npm test` is unaffected. See [`docs/QUICKSTART.md`](docs/QUICKSTART.md#real-postgresql-validation-optional) for details; that section also records the latest real-PostgreSQL run and its PostgreSQL-version caveats.
 
 ## License
 

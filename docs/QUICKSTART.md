@@ -199,3 +199,16 @@ Behavior and safety:
   disposable database.
 - It does not require database-admin privileges and does not drop the database.
 - `npm test` stays pg-mem-only; `npm run test:postgres` runs only this lane.
+
+Validation record:
+
+- 2026-10-13: the lane ran against a real PostgreSQL server (hosted Neon) and
+  passed 6/6. It needed one test fix first — the cleanup step deleted a merchant
+  whose ledger row is immutable by design, so it now tolerates only foreign-key
+  violation `23503` and rethrows anything else.
+- Caveats: that run used PostgreSQL 18.6 through a pooled endpoint, so it is not
+  yet proof for PostgreSQL 16, and `channel_binding` in the connection string is
+  ignored by node-postgres. Re-run against a 16.x direct endpoint before treating
+  "PostgreSQL 16 verified" as true.
+- A pooled endpoint (PgBouncer transaction mode) works for this lane, but the
+  direct endpoint is still the safer choice for running migrations.
