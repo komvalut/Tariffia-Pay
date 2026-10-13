@@ -9,10 +9,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 Tariffia Pay is at approximately **v0.1.0 — pre-1.0 / release candidate**. The
 core is feature-complete and well-tested (unit/integration suite plus a
-production-style mock payment smoke test). It has **not** been validated against
-a real PostgreSQL engine in this environment (the sandbox blocks the shared
-memory PostgreSQL requires); that validation lane exists and must be run on a
-normal Linux or Docker host before a production 1.0 release.
+production-style mock payment smoke test).
+
+The opt-in real-PostgreSQL lane has been run against a real engine and passes
+6/6 (see [`docs/QUICKSTART.md`](docs/QUICKSTART.md#real-postgresql-validation-optional)).
+That run used PostgreSQL 18.6 through a pooled endpoint, so it is evidence that
+the migrations and the ledger/audit append-only triggers behave correctly on a
+real server, but it is **not** yet evidence for PostgreSQL 16. A run against a
+16.x direct endpoint remains a prerequisite for a 1.0 release.
 
 ## [Unreleased]
 
@@ -21,6 +25,19 @@ normal Linux or Docker host before a production 1.0 release.
 - Release readiness: SDK packaging now builds automatically on pack/publish
   (`prepack`/`prepare`), a `CHANGELOG.md`, and a `docs/RELEASING.md` release
   procedure. No runtime behavior changes.
+
+### Fixed
+
+- Real-PostgreSQL lane: the cleanup step no longer fails on a real engine.
+  Deleting a merchant whose ledger row is immutable by design raised
+  `foreign_key_violation` (`23503`); it now tolerates only that code and
+  rethrows anything else.
+
+### Changed
+
+- Bumped `source-map-js` to 1.2.2 (dev-only transitive dependency), resolving
+  GHSA-68fv-2mgg-jv7q; `npm audit` reports 0 vulnerabilities.
+- Documented the real-PostgreSQL validation run and its caveats.
 
 ## [0.1.0]
 
