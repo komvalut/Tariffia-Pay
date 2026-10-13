@@ -130,9 +130,13 @@ describe.skipIf(!runLane)('real PostgreSQL integration', () => {
 
   it('cleans up the rows it created where the schema permits', async () => {
     await db.query('DELETE FROM customers WHERE merchant_id = $1', [merchantId]);
-    await db.query('DELETE FROM merchants WHERE id = $1', [merchantId]);
     // audit_log and ledger_entries stay behind (append-only/immutable) on the
     // disposable test database by design.
+    try {
+      await db.query('DELETE FROM merchants WHERE id = $1', [merchantId]);
+    } catch (error) {
+      if ((error as { code?: string }).code !== '23503') throw error;
+    }
     const customers = await db.query('SELECT count(*)::int AS count FROM customers WHERE merchant_id = $1', [merchantId]);
     expect(customers.rows[0]!.count).toBe(0);
   });
